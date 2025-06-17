@@ -75,7 +75,8 @@ export default function SQLTerminal() {
 
   useEffect(() => {
     if (!authState.isAuthenticated && authStep === 'ask') {
-      addLine('output', 'Do you have an account? (y/n):')
+      // New:
+      addLine('output', 'Welcome! Type LOGIN to sign in or REGISTER to create an account.')
     }
   }, [authState.isAuthenticated, authStep])
 
@@ -112,15 +113,18 @@ export default function SQLTerminal() {
     // Add input to display (mask password)
     const displayInput = isPasswordInput ? '*'.repeat(input.length) : input
     addLine('input', `${getPrompt()}${displayInput}`)
+
+    // Clear input *immediately*
+    setCurrentInput('')
+    setHistoryIndex(-1); // Reset history index as well
     
     if (!authState.isAuthenticated) {
       await handleAuthFlow(input)
     } else {
+      // Add to command history only for authenticated SQL commands (and not for auth flow)
+      // This logic is already inside handleSQLCommand, so no change needed here for that.
       await handleSQLCommand(input)
     }
-    
-    setCurrentInput('')
-    setHistoryIndex(-1)
   }
 
   const getPrompt = (): string => {
@@ -133,32 +137,37 @@ export default function SQLTerminal() {
   }
 
   const handleAuthFlow = async (input: string) => {
+    const command = input.toLowerCase().trim(); // Standardize input
+
     if (authStep === 'ask') {
-      if (input.toLowerCase() === 'y' || input.toLowerCase() === 'yes') {
-        setAuthStep('username')
-        setIsPasswordInput(false)
-        addLine('output', 'Enter user-name: ')
-      } else if (input.toLowerCase() === 'n' || input.toLowerCase() === 'no') {
-        setAuthState(prev => ({ ...prev, isRegistering: true }))
-        setAuthStep('username')
-        setIsPasswordInput(false)
-        addLine('output', 'Enter user-name: ')
+      if (command === 'login') {
+        setAuthState(prev => ({ ...prev, isRegistering: false }));
+        setAuthStep('username');
+        setIsPasswordInput(false);
+        // No addLine here, getPrompt() will handle it for the input
+      } else if (command === 'register') {
+        setAuthState(prev => ({ ...prev, isRegistering: true }));
+        setAuthStep('username');
+        setIsPasswordInput(false);
+        // No addLine here
       } else {
-        addLine('error', 'Please enter y (yes) or n (no)')
-        addLine('output', 'Do you have an account? (y/n):')
+        addLine('error', "Invalid command. Please type LOGIN or REGISTER.");
       }
     } else if (authStep === 'username') {
-      setTempUsername(input)
-      setAuthStep('password')
-      setIsPasswordInput(true)
-      addLine('output', 'Enter password: ')
+      setTempUsername(command); // Use command (trimmed input)
+      setAuthStep('password');
+      setIsPasswordInput(true);
+      // No addLine here for 'Enter password: '
     } else if (authStep === 'password') {
-      setIsPasswordInput(false)
-      
+      setIsPasswordInput(false);
+      // Note: 'input' here is the original, not 'command'. Passwords can be case-sensitive.
+      // However, the original code used 'input' for setTempUsername, which is fine.
+      // For handleRegister/handleLogin, it's 'input' from currentInput.trim()
+      // which is then passed to handleAuthFlow. So, for password, it's the trimmed input.
       if (authState.isRegistering) {
-        await handleRegister(tempUsername, input)
+        await handleRegister(tempUsername, input) // input here is the password
       } else {
-        await handleLogin(tempUsername, input)
+        await handleLogin(tempUsername, input) // input here is the password
       }
     }
   }
@@ -237,10 +246,11 @@ export default function SQLTerminal() {
     setAuthState({
       isAuthenticated: false,
       username: null,
-      isRegistering: false
-    })
-    setTempUsername('')
-    addLine('output', 'Do you have an account? (y/n):')
+      isRegistering: false,
+    });
+    setTempUsername('');
+    // New:
+    addLine('output', 'Welcome! Type LOGIN to sign in or REGISTER to create an account.');
   }
 
   const handleSQLCommand = async (input: string) => {
@@ -264,7 +274,8 @@ export default function SQLTerminal() {
       })
       setAuthStep('ask')
       addLine('output', '')
-      addLine('output', 'Do you have an account? (y/n):')
+      // Update to the new standard auth prompt
+      addLine('output', 'Welcome! Type LOGIN to sign in or REGISTER to create an account.');
       return
     }
 
@@ -393,8 +404,8 @@ export default function SQLTerminal() {
           <div
             key={index}
             className={`whitespace-pre-wrap ${
-              line.type === 'error' ? 'text-red-400' :
-              line.type === 'success' ? 'text-green-500' :
+          line.type === 'error' ? 'text-red-500' : // Updated error color
+          line.type === 'success' ? 'text-emerald-500' : // Updated success color
               line.type === 'input' ? 'text-black dark:text-white' : 'text-black dark:text-white'
             }`}
           >
