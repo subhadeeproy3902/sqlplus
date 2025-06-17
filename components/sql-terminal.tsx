@@ -319,9 +319,9 @@ export default function SQLTerminal() {
       const formattedResult = formatQueryResult(result)
       
       if (result.success) {
-        addLine('output', formattedResult)
+        addLine('output', await formattedResult)
       } else {
-        addLine('error', formattedResult)
+        addLine('error', await formattedResult)
       }
       
       addLine('output', '')
@@ -375,9 +375,9 @@ export default function SQLTerminal() {
         const formattedResult = formatQueryResult(executeResult)
 
         if (executeResult.success) {
-          addLine('output', formattedResult)
+          addLine('output', await formattedResult)
         } else {
-          addLine('error', formattedResult)
+          addLine('error', await formattedResult)
         }
       } else {
         addLine('error', `AI Error: ${result.error || 'Failed to generate SQL'}`)
