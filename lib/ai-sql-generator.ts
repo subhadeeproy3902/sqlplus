@@ -1,4 +1,4 @@
-import { openai } from '@ai-sdk/openai'
+import { createGroq } from '@ai-sdk/groq';
 import { generateText } from 'ai'
 import { getUserSchemaInfo, formatSchemaForAI } from './schema-introspection'
 
@@ -11,12 +11,16 @@ export interface AIQueryResult {
 
 export async function generateSQLFromPrompt(username: string, prompt: string): Promise<AIQueryResult> {
   try {
-    if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === 'your_openai_api_key_here') {
+    // API Key Check for Groq
+    if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY.trim() === '') {
       return {
         success: false,
-        error: 'OpenAI API key not configured. Please set OPENAI_API_KEY in your environment variables.'
-      }
+        error: 'Groq API key not configured. Please set GROQ_API_KEY in your environment variables.'
+      };
     }
+
+    // Instantiate Groq client
+    const groq = createGroq();
 
     // Get the user's database schema
     const schemaInfo = await getUserSchemaInfo(username)
@@ -47,9 +51,9 @@ User's Question: ${prompt}`
     // Thus, the 'prompt' field for generateText should be empty.
 
     const result = await generateText({
-      model: openai('gpt-4o-mini'),
-      system: systemPrompt, // The system prompt now includes the user's question directly
-      prompt: '', // User's question is now part of the system prompt.
+      model: groq('llama3-8b-8192'), // Using Llama3 8b model with Groq
+      system: systemPrompt, // The existing refined system prompt
+      prompt: '', // User's question is in systemPrompt
       maxTokens: 500,
       temperature: 0.1, // Low temperature for more consistent results
     })
