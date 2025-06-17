@@ -100,6 +100,8 @@ If there is conversation history, pay close attention to it to understand contex
     })
 
     const generatedText = result.text.trim()
+
+    console.log('Generated SQL:', generatedText)
     
     // Basic validation to ensure it looks like SQL
     if (!generatedText.toLowerCase().includes('select') && 
