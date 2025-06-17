@@ -18,6 +18,14 @@ interface AuthState {
   isRegistering: boolean
 }
 
+// Define the type for AI conversation history items
+interface AIConversationHistoryItem {
+  user: string;
+  assistant: string; // This will be the SQL query
+}
+
+const MAX_AI_HISTORY_LENGTH = 5; // Max 5 interactions
+
 export default function SQLTerminal() {
   const [lines, setLines] = useState<TerminalLine[]>([
     {
@@ -58,6 +66,7 @@ export default function SQLTerminal() {
   const [authStep, setAuthStep] = useState<'ask' | 'username' | 'password'>('ask')
   const [tempUsername, setTempUsername] = useState('')
   const [isPasswordInput, setIsPasswordInput] = useState(false)
+  const [aiConversationHistory, setAiConversationHistory] = useState<AIConversationHistoryItem[]>([]);
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false); // State for HelpModal
   
   const inputRef = useRef<HTMLTextAreaElement>(null) // Changed to HTMLTextAreaElement
@@ -100,19 +109,17 @@ export default function SQLTerminal() {
     setLines(prev => [...prev, { type, content, timestamp: new Date() }])
   }
 
+  // Updated handleKeyDown for textarea
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Ctrl+C for Cancellation (Global: works in auth and authenticated modes)
-    if (e.ctrlKey && (e.key.toLowerCase() === 'c' || e.key.toLowerCase() === 'с')) {
-      e.preventDefault();
-      const promptText = getPrompt();
-      // Display ^C, add to lines, clear input, and reset height.
-      // Using currentInput directly for displayValue to show exactly what was "cancelled".
-      const displayValue = isPasswordInput ? '*'.repeat(currentInput.length) : currentInput;
-      addLine('input', `${promptText}${displayValue}^C`);
-
-      setCurrentInput('');
-      if (inputRef.current) {
-        inputRef.current.style.height = 'auto'; // Reset height
+    if (e.key === 'Enter' && !e.shiftKey) { // Submit on Enter, allow Shift+Enter for newline
+      e.preventDefault() // Prevent default newline behavior
+      handleCommand()
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      if (commandHistory.length > 0 && historyIndex < commandHistory.length - 1) {
+        const newIndex = historyIndex + 1
+        setHistoryIndex(newIndex)
+        setCurrentInput(commandHistory[commandHistory.length - 1 - newIndex])
       }
       // setHistoryIndex(-1); // Optionally reset history browsing on Ctrl+C
       return;
@@ -220,7 +227,9 @@ export default function SQLTerminal() {
       if (authStep === 'username') return 'Enter user-name: '
       if (authStep === 'password') return 'Enter password: '
     }
-    return 'SQL> '
+    // For textarea, the prompt might be better on its own line or handled differently
+    // For now, keep SQL> prompt, but it will appear next to the first line of textarea
+    return authState.isAuthenticated ? 'SQL> ' : ''
   }
 
   const handleAuthFlow = async (input: string) => {
@@ -439,13 +448,21 @@ export default function SQLTerminal() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username: authState.username,
-          prompt
+          prompt,
+          history: aiConversationHistory // Send the history
         })
       })
 
       const result = await response.json()
 
       if (result.success && result.sqlQuery) {
+        // Add successful interaction to history
+        setAiConversationHistory(prevHistory => {
+          const newHistory = [...prevHistory, { user: prompt, assistant: result.sqlQuery }];
+          // Keep only the last MAX_AI_HISTORY_LENGTH items
+          return newHistory.slice(-MAX_AI_HISTORY_LENGTH);
+        });
+
         addLine('success', `Generated SQL: ${result.sqlQuery}`)
         addLine('output', '')
         addLine('output', 'Executing query...')
@@ -502,46 +519,64 @@ export default function SQLTerminal() {
         ref={terminalRef}
         className="flex-1 overflow-y-auto p-4 space-y-1"
       >
-        {lines.map((line, index) => {
-          let specialColor = '';
-          if (line.type === 'output' && line.content.startsWith('🤖 Generating SQL for:')) {
-            specialColor = 'text-blue-400 dark:text-blue-300'; // Example: Blue for generating
-          }
-          // The "Generated SQL:" message is already handled by line.type === 'success'
-
-          return (
-            <div
-              key={index}
-              className={`whitespace-pre-wrap ${
-                specialColor ? specialColor : // Apply special color if present
-                line.type === 'error' ? 'text-red-500' :
-                line.type === 'success' ? 'text-emerald-500' :
-                'text-black dark:text-white' // Default for 'input' and 'output'
-              }`}
-            >
-              {line.content}
+        {lines.map((line, index) => (
+          <div
+            key={index}
+            className={`whitespace-pre-wrap ${
+          line.type === 'error' ? 'text-red-500' :
+          line.type === 'success' ? 'text-emerald-500' :
+              line.type === 'input' ? 'text-black dark:text-white' : 'text-black dark:text-white'
+            }`}
+          >
+            {/* For input lines, if it was from textarea, it might have newlines */}
+            {line.type === 'input' && authState.isAuthenticated && !line.content.startsWith('SQL>') ? `SQL> ${line.content}` : line.content}
+          </div>
+        ))}
+        {/* Input area */}
+        <div className="flex text-black dark:text-white">
+          {/* Line numbers */}
+          { authState.isAuthenticated && !isPasswordInput && (
+            <div className="pr-2 text-right select-none text-gray-500 dark:text-gray-400">
+              {currentInput.split('\n').map((_, i) => (
+                <div key={i}>{i + 1}</div>
+              ))}
             </div>
-          );
-        })}
-        <div className="flex items-center text-black dark:text-white">
-          <span className="text-black dark:text-white">{getPrompt()}</span>
-          {/* Replaced input with textarea */}
-          <textarea
-            ref={inputRef}
-            rows={1}
-            value={currentInput}
-            onChange={(e) => setCurrentInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            className="bg-transparent border-none outline-none flex-1 text-black dark:text-white caret-black dark:caret-white resize-none overflow-y-hidden font-mono"
-            autoComplete="off"
-            spellCheck={false}
-            // type attribute is not valid for textarea, password masking will be handled by isPasswordInput state if needed elsewhere
-            // For the textarea itself, it doesn't support type="password".
-            // This means if isPasswordInput is true, the text will be visible in the textarea.
-            // This is a limitation if we need to keep textarea + password masking.
-            // For now, following subtask to change to textarea. Password masking in display (lines) is separate.
-          />
-          <span className="animate-pulse text-black dark:text-white">█</span>
+          )}
+          <div className="flex-1 flex items-start">
+            { authState.isAuthenticated && !isPasswordInput && <span className="text-black dark:text-white mr-1">{getPrompt()}</span>}
+            { !authState.isAuthenticated && <span className="text-black dark:text-white mr-1">{getPrompt()}</span>}
+            <textarea
+              ref={inputRef}
+              value={currentInput}
+              onChange={(e) => setCurrentInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              className="bg-transparent border-none outline-none flex-1 text-black dark:text-white caret-black dark:caret-white resize-none overflow-hidden"
+              rows={currentInput.split('\n').length || 1}
+              autoComplete="off"
+              spellCheck={false}
+              disabled={isPasswordInput && !authState.isAuthenticated} // Disable textarea for password input during auth
+            />
+            {/* Display a fake input for password to keep UI consistent */}
+            {isPasswordInput && authStep === 'password' && (
+              <div className="flex items-center flex-1">
+                <span className="text-black dark:text-white">{getPrompt()}</span>
+                <input
+                  type="password"
+                  value={currentInput}
+                  onChange={(e) => setCurrentInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    // Allow Enter key for password submission
+                    if (e.key === 'Enter') {
+                      handleCommand();
+                    }
+                  }}
+                  className="bg-transparent border-none outline-none flex-1 text-black dark:text-white caret-black dark:caret-white"
+                  autoFocus
+                />
+              </div>
+            )}
+          </div>
+          {!isPasswordInput && <span className="animate-pulse text-black dark:text-white ml-2">█</span>}
         </div>
       </div>
     </div>
