@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, KeyboardEvent } from 'react'
 import { formatQueryResult } from '@/lib/sql-executor'
 import { isAICommand, extractAIPrompt } from '@/lib/ai-sql-generator'
 import { ThemeToggle } from './theme-toggle'
+import HelpModal from './Helpmodal'
 
 interface TerminalLine {
   type: 'output' | 'input' | 'error' | 'success'
@@ -57,8 +58,9 @@ export default function SQLTerminal() {
   const [authStep, setAuthStep] = useState<'ask' | 'username' | 'password'>('ask')
   const [tempUsername, setTempUsername] = useState('')
   const [isPasswordInput, setIsPasswordInput] = useState(false)
+  const [isHelpModalOpen, setIsHelpModalOpen] = useState(false); // State for HelpModal
   
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null) // Changed to HTMLTextAreaElement
   const terminalRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -73,6 +75,20 @@ export default function SQLTerminal() {
     }
   }, [lines])
 
+  // Auto-grow textarea
+  useEffect(() => {
+    if (inputRef.current) {
+      // Keep single line for all auth steps (when user is not authenticated)
+      // or when specifically in password input mode (though this is covered by !authState.isAuthenticated)
+      if (!authState.isAuthenticated) {
+        inputRef.current.style.height = 'auto';
+      } else { // Authenticated: auto-grow for SQL input
+        inputRef.current.style.height = 'auto'; // Reset height to shrink if needed
+        inputRef.current.style.height = `${inputRef.current.scrollHeight}px`;
+      }
+    }
+  }, [currentInput, authState.isAuthenticated]); // Dependency on authState.isAuthenticated added
+
   useEffect(() => {
     if (!authState.isAuthenticated && authStep === 'ask') {
       // New:
@@ -84,46 +100,117 @@ export default function SQLTerminal() {
     setLines(prev => [...prev, { type, content, timestamp: new Date() }])
   }
 
-  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
-      handleCommand()
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      if (commandHistory.length > 0 && historyIndex < commandHistory.length - 1) {
-        const newIndex = historyIndex + 1
-        setHistoryIndex(newIndex)
-        setCurrentInput(commandHistory[commandHistory.length - 1 - newIndex])
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Ctrl+C for Cancellation (Global: works in auth and authenticated modes)
+    if (e.ctrlKey && (e.key.toLowerCase() === 'c' || e.key.toLowerCase() === 'с')) {
+      e.preventDefault();
+      const promptText = getPrompt();
+      // Display ^C, add to lines, clear input, and reset height.
+      // Using currentInput directly for displayValue to show exactly what was "cancelled".
+      const displayValue = isPasswordInput ? '*'.repeat(currentInput.length) : currentInput;
+      addLine('input', `${promptText}${displayValue}^C`);
+
+      setCurrentInput('');
+      if (inputRef.current) {
+        inputRef.current.style.height = 'auto'; // Reset height
       }
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      if (historyIndex > 0) {
-        const newIndex = historyIndex - 1
-        setHistoryIndex(newIndex)
-        setCurrentInput(commandHistory[commandHistory.length - 1 - newIndex])
-      } else if (historyIndex === 0) {
-        setHistoryIndex(-1)
-        setCurrentInput('')
+      // setHistoryIndex(-1); // Optionally reset history browsing on Ctrl+C
+      return;
+    }
+
+    // Handle authentication flow (unauthenticated user) - strict single-line behavior
+    if (!authState.isAuthenticated) {
+      if (e.key === 'Enter' && !e.shiftKey) { // Simple Enter submits
+        e.preventDefault();
+        handleCommand();
+      } else if (e.key === 'Tab' || (e.key === 'Enter' && e.shiftKey)) { // Disable Tab and Shift+Enter for newlines
+        e.preventDefault();
+      }
+      // Allow default for other keys (alphanumeric, backspace).
+      // History (ArrowUp/Down) will be handled by the common logic below if currentInput is empty.
+      // No return here, so history check can proceed.
+    } else {
+      // --- Multiline logic for authenticated users (SQL input) ---
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const start = e.currentTarget.selectionStart;
+        const end = e.currentTarget.selectionEnd;
+        setCurrentInput(prev => `${prev.substring(0, start)}\t${prev.substring(end)}`);
+        setTimeout(() => {
+          if (inputRef.current) {
+            inputRef.current.selectionStart = inputRef.current.selectionEnd = start + 1;
+          }
+        }, 0);
+        return; // Exclusive action for Tab when authenticated
+      }
+
+      if (e.key === 'Enter') {
+        e.preventDefault(); // Always prevent default for Enter to manage manually
+        const trimmedInput = currentInput.trim();
+        if (e.shiftKey) {
+          setCurrentInput(prev => prev + '\n'); // Shift+Enter adds newline
+        } else {
+          // Enter alone: execute if ends with semicolon or is a special command
+          const isSpecialCommand = ['exit', 'quit', 'clear scr', 'clear screen', 'help'].includes(trimmedInput.toLowerCase());
+          if (trimmedInput.endsWith(';') || isSpecialCommand) {
+            handleCommand();
+          } else {
+            setCurrentInput(prev => prev + '\n'); // Otherwise, add newline
+          }
+        }
+        return; // Exclusive action for Enter when authenticated
       }
     }
+
+    // Command History (ArrowUp/ArrowDown) - Active if input is empty, regardless of auth state (after specific Enter/Tab handling)
+    // This block is reached if not authenticated and key wasn't Enter/Tab/Shift+Enter,
+    // OR if authenticated and key wasn't Tab/Enter.
+    if (currentInput === '') {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (commandHistory.length > 0 && historyIndex < commandHistory.length - 1) {
+          const newIndex = historyIndex + 1;
+          setHistoryIndex(newIndex);
+          setCurrentInput(commandHistory[commandHistory.length - 1 - newIndex]);
+        }
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (historyIndex > 0) {
+          const newIndex = historyIndex - 1;
+          setHistoryIndex(newIndex);
+          setCurrentInput(commandHistory[commandHistory.length - 1 - newIndex]);
+        } else if (historyIndex === 0) { // Was at the first history item, now going "down" to empty
+          setHistoryIndex(-1);
+          setCurrentInput('');
+        }
+      }
+    }
+    // Other keys (letters, numbers, backspace, etc.) will be handled natively by the textarea.
   }
 
   const handleCommand = async () => {
-    const input = currentInput.trim()
+    // Use currentInput from state directly for processing, as it contains the full multiline text
+    const inputToProcess = currentInput.trim();
     
-    // Add input to display (mask password)
-    const displayInput = isPasswordInput ? '*'.repeat(input.length) : input
-    addLine('input', `${getPrompt()}${displayInput}`)
+    // For display, use the raw currentInput to preserve newlines before it's added to lines.
+    // Mask if password.
+    const displayInput = isPasswordInput ? '*'.repeat(currentInput.length) : currentInput;
+    // Add the potentially multiline input to the history display.
+    // The getPrompt() is added here to ensure it's part of the line.
+    addLine('input', `${getPrompt()}${displayInput}`);
 
-    // Clear input *immediately*
-    setCurrentInput('')
+    // Clear input *immediately* after command is captured
+    setCurrentInput('');
     setHistoryIndex(-1); // Reset history index as well
+    if (inputRef.current) { // Reset height after command submission
+        inputRef.current.style.height = 'auto';
+    }
     
+    // Process the command (which is already trimmed)
     if (!authState.isAuthenticated) {
-      await handleAuthFlow(input)
+      await handleAuthFlow(inputToProcess);
     } else {
-      // Add to command history only for authenticated SQL commands (and not for auth flow)
-      // This logic is already inside handleSQLCommand, so no change needed here for that.
-      await handleSQLCommand(input)
+      await handleSQLCommand(inputToProcess);
     }
   }
 
@@ -280,11 +367,12 @@ export default function SQLTerminal() {
     }
 
     if (input.toLowerCase() === 'help') {
+      // The existing help text added via addLine can remain as a quick reference
       addLine('output', 'Available commands:')
       addLine('output', '  SQL commands - Execute any SQL query')
       addLine('output', '  /ai <prompt> - Generate and execute SQL using AI')
       addLine('output', '  clear scr - Clear the screen')
-      addLine('output', '  help - Show this help message')
+      addLine('output', '  help - Show this help message (also opens detailed help)')
       addLine('output', '  exit - Disconnect and logout')
       addLine('output', '')
       addLine('output', 'AI Examples:')
@@ -292,7 +380,9 @@ export default function SQLTerminal() {
       addLine('output', '  /ai create a users table with id and name')
       addLine('output', '  /ai find all records where name contains John')
       addLine('output', '')
-      return
+      // Now also open the modal:
+      setIsHelpModalOpen(true);
+      return; // Prevent further processing of "help" as a SQL query
     }
 
     if (!input) {
@@ -396,33 +486,60 @@ export default function SQLTerminal() {
   return (
     <div className="h-screen bg-white dark:bg-black text-black dark:text-white font-mono text-sm overflow-hidden flex flex-col relative">
       <ThemeToggle />
+      {/* Help Button */}
+      <button
+        onClick={() => setIsHelpModalOpen(true)}
+        className="fixed top-4 right-16 z-50 p-2 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-black text-black dark:text-white hover:bg-gray-100 dark:hover:bg-gray-900 transition-colors"
+        aria-label="Open help modal"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12v-.008Z" />
+        </svg>
+      </button>
+      <HelpModal isOpen={isHelpModalOpen} onClose={() => setIsHelpModalOpen(false)} />
+
       <div
         ref={terminalRef}
         className="flex-1 overflow-y-auto p-4 space-y-1"
       >
-        {lines.map((line, index) => (
-          <div
-            key={index}
-            className={`whitespace-pre-wrap ${
-          line.type === 'error' ? 'text-red-500' : // Updated error color
-          line.type === 'success' ? 'text-emerald-500' : // Updated success color
-              line.type === 'input' ? 'text-black dark:text-white' : 'text-black dark:text-white'
-            }`}
-          >
-            {line.content}
-          </div>
-        ))}
+        {lines.map((line, index) => {
+          let specialColor = '';
+          if (line.type === 'output' && line.content.startsWith('🤖 Generating SQL for:')) {
+            specialColor = 'text-blue-400 dark:text-blue-300'; // Example: Blue for generating
+          }
+          // The "Generated SQL:" message is already handled by line.type === 'success'
+
+          return (
+            <div
+              key={index}
+              className={`whitespace-pre-wrap ${
+                specialColor ? specialColor : // Apply special color if present
+                line.type === 'error' ? 'text-red-500' :
+                line.type === 'success' ? 'text-emerald-500' :
+                'text-black dark:text-white' // Default for 'input' and 'output'
+              }`}
+            >
+              {line.content}
+            </div>
+          );
+        })}
         <div className="flex items-center text-black dark:text-white">
           <span className="text-black dark:text-white">{getPrompt()}</span>
-          <input
+          {/* Replaced input with textarea */}
+          <textarea
             ref={inputRef}
-            type={isPasswordInput ? 'password' : 'text'}
+            rows={1}
             value={currentInput}
             onChange={(e) => setCurrentInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            className="bg-transparent border-none outline-none flex-1 text-black dark:text-white caret-black dark:caret-white"
+            className="bg-transparent border-none outline-none flex-1 text-black dark:text-white caret-black dark:caret-white resize-none overflow-y-hidden font-mono"
             autoComplete="off"
             spellCheck={false}
+            // type attribute is not valid for textarea, password masking will be handled by isPasswordInput state if needed elsewhere
+            // For the textarea itself, it doesn't support type="password".
+            // This means if isPasswordInput is true, the text will be visible in the textarea.
+            // This is a limitation if we need to keep textarea + password masking.
+            // For now, following subtask to change to textarea. Password masking in display (lines) is separate.
           />
           <span className="animate-pulse text-black dark:text-white">█</span>
         </div>

@@ -59,6 +59,8 @@ User's Question: ${prompt}`
     })
 
     const generatedText = result.text.trim()
+
+    console.log('Generated SQL:', generatedText)
     
     // Basic validation to ensure it looks like SQL
     if (!generatedText.toLowerCase().includes('select') && 
