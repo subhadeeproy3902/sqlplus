@@ -59,6 +59,7 @@ export default function SQLTerminal() {
   const [tempUsername, setTempUsername] = useState('')
   const [isPasswordInput, setIsPasswordInput] = useState(false)
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false); // State for HelpModal
+  const [currentLineNumber, setCurrentLineNumber] = useState(1); // For auto-numbering
   
   const inputRef = useRef<HTMLTextAreaElement>(null) // Changed to HTMLTextAreaElement
   const terminalRef = useRef<HTMLDivElement>(null)
@@ -148,14 +149,23 @@ export default function SQLTerminal() {
         e.preventDefault(); // Always prevent default for Enter to manage manually
         const trimmedInput = currentInput.trim();
         if (e.shiftKey) {
-          setCurrentInput(prev => prev + '\n'); // Shift+Enter adds newline
+          // Shift+Enter: always add a newline, but without auto-numbering for simplicity,
+          // or decide if numbering should continue/reset here. For now, just newline.
+          setCurrentInput(prev => prev + '\n');
         } else {
-          // Enter alone: execute if ends with semicolon or is a special command
+          // Enter alone:
           const isSpecialCommand = ['exit', 'quit', 'clear scr', 'clear screen', 'help'].includes(trimmedInput.toLowerCase());
           if (trimmedInput.endsWith(';') || isSpecialCommand) {
+            // Command is complete, execute it
             handleCommand();
+            // currentLineNumber will be reset in handleCommand
           } else {
-            setCurrentInput(prev => prev + '\n'); // Otherwise, add newline
+            // Command is not complete, start or continue auto-numbering
+            setCurrentLineNumber(prevLineNum => {
+              const nextLineNum = prevLineNum + 1;
+              setCurrentInput(prevInput => `${prevInput}\n${nextLineNum}) `);
+              return nextLineNum;
+            });
           }
         }
         return; // Exclusive action for Enter when authenticated
@@ -205,6 +215,7 @@ export default function SQLTerminal() {
     if (inputRef.current) { // Reset height after command submission
         inputRef.current.style.height = 'auto';
     }
+    setCurrentLineNumber(1); // Reset line number after command execution
     
     // Process the command (which is already trimmed)
     if (!authState.isAuthenticated) {
@@ -500,7 +511,7 @@ export default function SQLTerminal() {
 
       <div
         ref={terminalRef}
-        className="flex-1 overflow-y-auto p-4 space-y-1"
+        className="flex-1 overflow-y-auto p-2 space-y-1 terminal-output" // Reduced padding, added terminal-output class
       >
         {lines.map((line, index) => {
           let specialColor = '';
@@ -523,7 +534,8 @@ export default function SQLTerminal() {
             </div>
           );
         })}
-        <div className="flex items-center text-black dark:text-white">
+        {/* Input area styling: Added px-2 pb-2 pt-1 and items-start */}
+        <div className="flex items-start text-black dark:text-white px-2 pb-2 pt-1">
           <span className="text-black dark:text-white">{getPrompt()}</span>
           {/* Replaced input with textarea */}
           <textarea
@@ -535,9 +547,15 @@ export default function SQLTerminal() {
             className="bg-transparent border-none outline-none flex-1 text-black dark:text-white caret-black dark:caret-white resize-none overflow-y-hidden font-mono"
             autoComplete="off"
             spellCheck={false}
+            style={isPasswordInput ? {
+              WebkitTextSecurity: 'disc',
+              textSecurity: 'disc',
+              fontFamily: 'monospace' // Ensure monospace for consistent masking char width
+            } : {
+              fontFamily: 'monospace' // Keep font consistent
+            }}
             // type attribute is not valid for textarea, password masking will be handled by isPasswordInput state if needed elsewhere
             // For the textarea itself, it doesn't support type="password".
-            // This means if isPasswordInput is true, the text will be visible in the textarea.
             // This is a limitation if we need to keep textarea + password masking.
             // For now, following subtask to change to textarea. Password masking in display (lines) is separate.
           />

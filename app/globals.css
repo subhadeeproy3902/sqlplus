@@ -120,3 +120,24 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Minimalist scrollbar for Webkit browsers */
+.terminal-output::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.terminal-output::-webkit-scrollbar-track {
+  background: transparent; /* Or match terminal background */
+}
+.terminal-output::-webkit-scrollbar-thumb {
+  background: #555; /* A neutral grey */
+  border-radius: 4px;
+}
+.terminal-output::-webkit-scrollbar-thumb:hover {
+  background: #777;
+}
+/* For Firefox */
+.terminal-output {
+  scrollbar-width: thin;
+  scrollbar-color: #555 transparent; /* Or match terminal background */
+}
