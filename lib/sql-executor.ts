@@ -63,25 +63,71 @@ export async function executeUserQuery(username: string, query: string): Promise
     const setPathTemplate = Object.assign([`SET search_path TO "${schemaName}"`], { raw: [`SET search_path TO "${schemaName}"`] })
     await sql(setPathTemplate as TemplateStringsArray)
 
-    // Execute the user query
-    const userQueryTemplate = Object.assign([cleanQuery], { raw: [cleanQuery] })
-    const result = await sql(userQueryTemplate as TemplateStringsArray)
-    
-    // Handle different types of results
-    if (Array.isArray(result)) {
+    // Split the query string into individual statements
+    const queries = cleanQuery.split(';').map(q => q.trim()).filter(q => q.length > 0);
+
+    if (queries.length === 0) {
       return {
-        success: true,
-        data: result,
-        rowCount: result.length,
-        message: result.length === 0 ? 'Query executed successfully (no rows returned)' : `${result.length} row(s) returned`
-      }
-    } else {
-      return {
-        success: true,
-        data: [],
-        message: 'Query executed successfully'
+        success: false,
+        error: 'Empty query or only semicolons provided'
+      };
+    }
+
+    let allResults: any[] = [];
+    let totalRowCount = 0;
+    let messages: string[] = [];
+
+    for (let i = 0; i < queries.length; i++) {
+      const singleQuery = queries[i];
+      try {
+        // Add back the semicolon for execution if it's not a SET command,
+        // as some drivers/DBs might prefer it, though Neon might not strictly need it.
+        // However, it's safer for broader compatibility if this code were adapted.
+        // For Neon, it might be fine without, but let's be explicit.
+        const queryToExecute = singleQuery.toUpperCase().startsWith('SET') ? singleQuery : `${singleQuery};`;
+
+        const userQueryTemplate = Object.assign([queryToExecute], { raw: [queryToExecute] });
+        const result = await sql(userQueryTemplate as TemplateStringsArray);
+
+        if (Array.isArray(result)) {
+          allResults = allResults.concat(result);
+          totalRowCount += result.length;
+          if (result.length === 0 && !singleQuery.toUpperCase().startsWith('SELECT')) {
+            messages.push(`Statement ${i + 1} executed successfully (e.g., DDL/DML).`);
+          } else {
+            messages.push(`Statement ${i + 1}: ${result.length} row(s) returned.`);
+          }
+        } else if (result && typeof result === 'object' && 'command' in result) { // DDL/DML commands often return an object with command type
+          messages.push(`Statement ${i + 1} (${(result as any).command}) executed successfully.`);
+          if ((result as any).rowCount !== null && (result as any).rowCount !== undefined) {
+            totalRowCount += (result as any).rowCount;
+          }
+        } else {
+          messages.push(`Statement ${i + 1} executed successfully.`);
+        }
+      } catch (innerError: unknown) {
+        console.error(`SQL execution error for statement ${i + 1} ("${singleQuery}"):`, innerError);
+        let errorMessage = (innerError instanceof Error ? innerError.message : String(innerError)) || 'Unknown error occurred';
+        // Attempt to parse PostgreSQL error for better user feedback
+        if (errorMessage.includes('syntax error')) {
+          errorMessage = `Syntax error in statement ${i + 1}: "${singleQuery}"`;
+        } else if (errorMessage.includes('relation') && errorMessage.includes('does not exist')) {
+          errorMessage = `Table or relation in statement ${i + 1} ("${singleQuery}") does not exist`;
+        } else if (errorMessage.includes('column') && errorMessage.includes('does not exist')) {
+          errorMessage = `Column in statement ${i + 1} ("${singleQuery}") does not exist`;
+        }
+        // Prepend which statement failed
+        throw new Error(`Error executing statement ${i + 1} of ${queries.length} ("${singleQuery}"): ${errorMessage}`);
       }
     }
+
+    return {
+      success: true,
+      data: allResults,
+      rowCount: totalRowCount,
+      message: queries.length > 1 ? `All ${queries.length} statements executed successfully. Combined results shown. ${messages.join(' ')}` : messages.join(' ') || 'Query executed successfully.'
+    };
+
   } catch (error: unknown) {
     console.error('SQL execution error:', error)
     
