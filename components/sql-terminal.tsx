@@ -547,9 +547,8 @@ export default function SQLTerminal() {
             className="bg-transparent border-none outline-none flex-1 text-black dark:text-white caret-black dark:caret-white resize-none overflow-y-hidden font-mono"
             autoComplete="off"
             spellCheck={false}
-            style={isPasswordInput ? {
+            style={isPasswordInput ? { 
               WebkitTextSecurity: 'disc',
-              textSecurity: 'disc',
               fontFamily: 'monospace' // Ensure monospace for consistent masking char width
             } : {
               fontFamily: 'monospace' // Keep font consistent

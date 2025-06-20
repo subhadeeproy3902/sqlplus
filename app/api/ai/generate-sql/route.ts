@@ -1,7 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { generateSQLFromPrompt } from '@/lib/ai-sql-generator'
-
-import { NextRequest, NextResponse } from 'next/server'
 import { generateSQLFromPrompt, PromptHistoryItem } from '@/lib/ai-sql-generator'
 
 export async function POST(request: NextRequest) {
