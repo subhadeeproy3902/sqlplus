@@ -437,6 +437,10 @@ export default function SQLTerminal() {
         })
       });
       setCommandHistory(prev => [...prev, input])
+    } catch (error) {
+      addLine('error', 'ERROR: Failed to execute query');
+      addLine('output', '');
+      return; // Exit early on fetch error
     }
 
     // Handle special commands
