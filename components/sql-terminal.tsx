@@ -352,8 +352,90 @@ export default function SQLTerminal() {
   }
 
   const handleSQLCommand = async (input: string) => {
+    // Clean the input to remove line numbers like "2) ", "3) " etc.
+    // from the start of lines (except the first line).
+    const lines = input.split('\n');
+    const cleanedInput = lines.map((line, index) => {
+      if (index === 0) {
+        return line; // Keep the first line as is
+      }
+      // For subsequent lines, remove the "N) " pattern
+      // Regex matches: start of line, 1+ digits, a closing parenthesis, and a space.
+      return line.replace(/^\d+\)\s/, '');
+    }).join('\n');
+
     // Add to command history (only for SQL commands)
-    if (input && !commandHistory.includes(input)) {
+    // Use the cleanedInput for history to store the executable version
+    if (cleanedInput && !commandHistory.includes(cleanedInput)) {
+      setCommandHistory(prev => [...prev, cleanedInput]);
+    }
+
+    // Handle special commands using the original input for commands like "clear scr"
+    // as they might not have line numbers and cleaning might be irrelevant.
+    // However, for consistency and to avoid issues if they somehow get numbered,
+    // it's safer to use cleanedInput for command checks too, or be very specific.
+    // For now, using 'input.toLowerCase()' for special commands as they are less likely to be multi-lined with numbers.
+    // Let's reconsider this: Special commands should also operate on the cleaned version
+    // if they were part of a multi-line entry that got numbered.
+    const commandToCheck = cleanedInput.trim().toLowerCase(); // Use cleaned and trimmed for command checks
+
+    if (commandToCheck === 'clear scr' || commandToCheck === 'clear screen') {
+      setLines([]);
+      return;
+    }
+
+    if (commandToCheck === 'exit' || commandToCheck === 'quit') {
+      addLine('output', 'Disconnected from Oracle Database 21c Express Edition Release 21.0.0.0.0 - Production');
+      setAuthState({
+        isAuthenticated: false,
+        username: null,
+        isRegistering: false
+      });
+      setAuthStep('ask');
+      addLine('output', '');
+      // Update to the new standard auth prompt
+      addLine('output', 'Welcome! Type LOGIN to sign in or REGISTER to create an account.');
+      return;
+    }
+
+    if (commandToCheck === 'help') {
+      // The existing help text added via addLine can remain as a quick reference
+      addLine('output', 'Available commands:');
+      addLine('output', '  SQL commands - Execute any SQL query');
+      addLine('output', '  /ai <prompt> - Generate and execute SQL using AI');
+      addLine('output', '  clear scr - Clear the screen');
+      addLine('output', '  help - Show this help message (also opens detailed help)');
+      addLine('output', '  exit - Disconnect and logout');
+      addLine('output', '');
+      addLine('output', 'AI Examples:');
+      addLine('output', '  /ai show me all tables');
+      addLine('output', '  /ai create a users table with id and name');
+      addLine('output', '  /ai find all records where name contains John');
+      addLine('output', '');
+      // Now also open the modal:
+      setIsHelpModalOpen(true);
+      return; // Prevent further processing of "help" as a SQL query
+    }
+
+    if (!cleanedInput.trim()) { // Check if cleanedInput is empty
+      return;
+    }
+
+    // Handle AI commands using cleanedInput
+    if (isAICommand(cleanedInput)) {
+      await handleAICommand(cleanedInput);
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/sql/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: authState.username,
+          query: cleanedInput // Use the cleaned SQL query
+        })
+      });
       setCommandHistory(prev => [...prev, input])
     }
 
