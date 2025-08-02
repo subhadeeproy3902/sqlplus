@@ -175,74 +175,32 @@ export async function executeUserQuery(username: string, query: string): Promise
     processedQuery = processedQuery.replace(/^(here's|here is|the sql query is|sql query:)/i, '')
     processedQuery = processedQuery.replace(/\n\s*$/g, '') // Remove trailing whitespace
 
-    // MANDATORY: Prepend SET search_path to every user query
-    const setPathCommand = `SET search_path TO "${schemaName}"`
-    const queryWithPath = `${setPathCommand}; ${processedQuery}`
+    // MANDATORY: Prepend SET search_path to every user query.
+    // This is executed as a single transaction to ensure the search_path is set
+    // for the user's query, which is critical in a stateless serverless environment.
+    const setPathCommand = `SET search_path TO "${schemaName}";`
+    const finalQuery = `${setPathCommand} ${processedQuery}`
 
-    // Split the query string into individual statements
-    const queries = queryWithPath.split(';').map(q => q.trim()).filter(q => q.length > 0);
+    // Execute the combined query
+    const queryTemplate = Object.assign([finalQuery], { raw: [finalQuery] });
+    const result = await sql(queryTemplate as TemplateStringsArray);
 
-    if (queries.length === 0) {
-      return {
-        success: false,
-        error: 'Empty query or only semicolons provided'
-      };
-    }
-
-    let allResults: any[] = [];
-    let totalRowCount = 0;
-    let messages: string[] = [];
-
-    for (let i = 0; i < queries.length; i++) {
-      const singleQuery = queries[i];
-
-      try {
-        // Add back the semicolon for execution if it's not a SET command,
-        // as some drivers/DBs might prefer it, though Neon might not strictly need it.
-        // However, it's safer for broader compatibility if this code were adapted.
-        // For Neon, it might be fine without, but let's be explicit.
-        const queryToExecute = singleQuery.toUpperCase().startsWith('SET') ? singleQuery : `${singleQuery};`;
-
-        const userQueryTemplate = Object.assign([queryToExecute], { raw: [queryToExecute] });
-        const result = await sql(userQueryTemplate as TemplateStringsArray);
-
-        if (Array.isArray(result)) {
-          allResults = allResults.concat(result);
-          totalRowCount += result.length;
-          if (result.length === 0 && !singleQuery.toUpperCase().startsWith('SELECT')) {
-            messages.push(`Statement ${i + 1} executed successfully (e.g., DDL/DML).`);
-          } else {
-            messages.push(`Statement ${i + 1}: ${result.length} row(s) returned.`);
-          }
-        } else if (result && typeof result === 'object' && 'command' in result) { // DDL/DML commands often return an object with command type
-          messages.push(`Statement ${i + 1} (${(result as any).command}) executed successfully.`);
-          if ((result as any).rowCount !== null && (result as any).rowCount !== undefined) {
-            totalRowCount += (result as any).rowCount;
-          }
-        } else {
-          messages.push(`Statement ${i + 1} executed successfully.`);
-        }
-      } catch (innerError: unknown) {
-        console.error(`SQL execution error for statement ${i + 1} ("${singleQuery}"):`, innerError);
-        let errorMessage = (innerError instanceof Error ? innerError.message : String(innerError)) || 'Unknown error occurred';
-        // Attempt to parse PostgreSQL error for better user feedback
-        if (errorMessage.includes('syntax error')) {
-          errorMessage = `Syntax error in statement ${i + 1}: "${singleQuery}"`;
-        } else if (errorMessage.includes('relation') && errorMessage.includes('does not exist')) {
-          errorMessage = `Table or relation in statement ${i + 1} ("${singleQuery}") does not exist`;
-        } else if (errorMessage.includes('column') && errorMessage.includes('does not exist')) {
-          errorMessage = `Column in statement ${i + 1} ("${singleQuery}") does not exist`;
-        }
-        // Prepend which statement failed
-        throw new Error(`Error executing statement ${i + 1} of ${queries.length} ("${singleQuery}"): ${errorMessage}`);
+    let message = 'Query executed successfully.';
+    if (Array.isArray(result)) {
+      if (result.length === 0 && !processedQuery.toUpperCase().includes('SELECT')) {
+        message = `Command executed successfully.`;
+      } else {
+        message = `${result.length} row(s) returned.`;
       }
+    } else if (result && typeof result === 'object' && 'command' in result) {
+      message = `Command (${(result as any).command}) executed successfully.`;
     }
 
     return {
       success: true,
-      data: allResults,
-      rowCount: totalRowCount,
-      message: queries.length > 1 ? `All ${queries.length} statements executed successfully. Combined results shown. ${messages.join(' ')}` : messages.join(' ') || 'Query executed successfully.'
+      data: Array.isArray(result) ? result : [],
+      rowCount: Array.isArray(result) ? result.length : (result as any).rowCount || 0,
+      message: message
     };
 
   } catch (error: unknown) {
