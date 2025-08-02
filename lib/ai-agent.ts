@@ -146,7 +146,9 @@ export async function generateSQLWithAgent(username: string, prompt: string) {
     try {
       const sqlResult = await generateText({
         model: groq('meta-llama/llama-4-scout-17b-16e-instruct'), // Use stable model
-        prompt: `You are an expert PostgreSQL assistant. Generate ONLY the SQL query for this request.
+        prompt: `You are an expert PostgreSQL assistant. Your primary function is to generate SQL queries based on user requests.
+
+SPECIAL TOOL INSTRUCTION: If the user asks to see, show, or list their tables, you MUST respond with the exact text: USE_SHOW_TABLES_TOOL
 
 USER REQUEST: "${prompt}"
 
@@ -159,38 +161,47 @@ Columns: ${item.schema?.columns?.map((col: any) => `${col.column_name} (${col.da
 `).join('\n')}
 
 CRITICAL RULES:
-1. Generate ONLY the SQL query - no explanations, no markdown, no code blocks
-2. Only use the tables listed above: ${filteredRelevantTables.join(', ')}
-3. Use PostgreSQL syntax
-4. Do NOT include schema prefixes in table names
-5. For CREATE TABLE statements, use simple table names
-6. Use appropriate data types: VARCHAR(255), INTEGER, SERIAL PRIMARY KEY, BOOLEAN, TIMESTAMP, etc.
-7. End with a single semicolon
+1. **Follow the SPECIAL TOOL INSTRUCTION above.** If the user wants to see their tables, respond with USE_SHOW_TABLES_TOOL and nothing else.
+2. For all other requests, generate ONLY the SQL query - no explanations, no markdown, no code blocks.
+3. Only use the tables listed above: ${filteredRelevantTables.join(', ')}
+4. Use PostgreSQL syntax.
+5. Do NOT include schema prefixes in table names.
+6. For CREATE TABLE statements, use simple table names.
+7. Use appropriate data types: VARCHAR(255), INTEGER, SERIAL PRIMARY KEY, BOOLEAN, TIMESTAMP, etc.
+8. End with a single semicolon.
 
-SQL Query:`
+Your Response:`
       })
 
       sqlQuery = sqlResult.text.trim()
 
-      // Clean up the response - remove markdown code blocks and extra text
-      sqlQuery = sqlQuery.replace(/```sql\s*/gi, '').replace(/```\s*/g, '')
+      // Check if the AI wants to use the custom tool
+      if (sqlQuery === 'USE_SHOW_TABLES_TOOL') {
+        console.log('AI requested to use SHOW_TABLES_TOOL. Executing predefined query.')
+        const schemaName = username.replace(/[^a-zA-Z0-9_]/g, '_')
+        sqlQuery = `
+          SELECT tablename
+          FROM pg_tables
+          WHERE schemaname = '${schemaName}'
+          ORDER BY tablename;
+        `
+      } else {
+        // If not using the tool, clean up the generated SQL as before
+        sqlQuery = sqlQuery.replace(/```sql\s*/gi, '').replace(/```\s*/g, '');
+        sqlQuery = sqlQuery.replace(/^(here's|here is|the sql query is|sql query:)/i, '');
+        sqlQuery = sqlQuery.replace(/^(based on|looking at)/i, '');
 
-      // Remove common AI response patterns
-      sqlQuery = sqlQuery.replace(/^(here's|here is|the sql query is|sql query:)/i, '')
-      sqlQuery = sqlQuery.replace(/^(based on|looking at)/i, '')
-
-      const lines = sqlQuery.split('\n')
-      const sqlLines = lines.filter(line => {
-        const trimmedLine = line.trim()
-        return trimmedLine.length > 0 &&
-               !trimmedLine.toLowerCase().includes('here') &&
-               !trimmedLine.toLowerCase().includes('query') &&
-               !trimmedLine.startsWith('--') // Remove comments
-      })
-      sqlQuery = sqlLines.join('\n').trim()
-
-      // Remove any trailing semicolons and re-add a single one
-      sqlQuery = sqlQuery.replace(/;+$/, '') + ';'
+        const lines = sqlQuery.split('\n');
+        const sqlLines = lines.filter(line => {
+          const trimmedLine = line.trim();
+          return trimmedLine.length > 0 &&
+                 !trimmedLine.toLowerCase().includes('here') &&
+                 !trimmedLine.toLowerCase().includes('query') &&
+                 !trimmedLine.startsWith('--');
+        });
+        sqlQuery = sqlLines.join('\n').trim();
+        sqlQuery = sqlQuery.replace(/;+$/, '') + ';';
+      }
 
     } catch (error) {
       throw new Error(`Failed to generate SQL: ${error instanceof Error ? error.message : 'Unknown error'}`)
