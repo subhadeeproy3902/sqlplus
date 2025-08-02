@@ -39,17 +39,15 @@ export async function getUserSchemaInfo(username: string): Promise<SchemaInfo> {
     
     // Get all tables in the user's schema
     const tablesQuery = Object.assign([`
-      SELECT table_name 
-      FROM information_schema.tables 
-      WHERE table_schema = '${schemaName}' 
-      AND table_type = 'BASE TABLE'
-      ORDER BY table_name
+      SELECT tablename
+      FROM pg_tables
+      WHERE schemaname = '${schemaName}'
+      ORDER BY tablename
     `], { raw: [`
-      SELECT table_name 
-      FROM information_schema.tables 
-      WHERE table_schema = '${schemaName}' 
-      AND table_type = 'BASE TABLE'
-      ORDER BY table_name
+      SELECT tablename
+      FROM pg_tables
+      WHERE schemaname = '${schemaName}'
+      ORDER BY tablename
     `] })
     
     const tablesResult = await sql(tablesQuery as TemplateStringsArray)
@@ -58,7 +56,7 @@ export async function getUserSchemaInfo(username: string): Promise<SchemaInfo> {
     const tableInfos: TableInfo[] = []
     
     for (const table of tables) {
-      const tableName = table.table_name
+      const tableName = table.tablename
       
       // Get column information
       const columnsQuery = Object.assign([`

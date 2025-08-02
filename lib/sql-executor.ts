@@ -95,6 +95,23 @@ export async function executeUserQuery(username: string, query: string): Promise
       }
     }
 
+    // Sanitize schema name
+    const currentUserName = username.replace(/[^a-zA-Z0-9_]/g, '_')
+
+    // Check if user is trying to access another user's schema
+    const schemaAccessPattern = /schemaname\s*=\s*['"]([^'"]+)['"]/gi;
+    const matches = [...cleanQuery.matchAll(schemaAccessPattern)];
+
+    for (const match of matches) {
+      const requestedSchema = match[1];
+      if (requestedSchema !== currentUserName) {
+        return {
+          success: false,
+          error: `Access denied: You can only access your own schema '${currentUserName}'. Attempted to access '${requestedSchema}'.`
+        }
+      }
+    }
+
     // Validate user schema access FIRST
     const validation = validateUserSchemaAccess(cleanQuery, username);
     if (!validation.isValid) {
@@ -128,7 +145,7 @@ export async function executeUserQuery(username: string, query: string): Promise
       }
     }
 
-    // Sanitize schema name
+    // Sanitize schema name (already done above, but keeping for consistency)
     const schemaName = username.replace(/[^a-zA-Z0-9_]/g, '_')
 
     // CRITICAL: Set up complete user isolation
@@ -138,10 +155,7 @@ export async function executeUserQuery(username: string, query: string): Promise
       const createTemplate = Object.assign([createSchemaQuery], { raw: [createSchemaQuery] })
       await sql(createTemplate as TemplateStringsArray)
 
-      // Set search path to ONLY user's schema - no public, no other schemas
-      const setPathQuery = `SET search_path TO "${schemaName}"`
-      const pathTemplate = Object.assign([setPathQuery], { raw: [setPathQuery] })
-      await sql(pathTemplate as TemplateStringsArray)
+      // Schema setup complete - SET search_path will be prepended to user queries below
 
     } catch (setupError) {
       console.error('Schema setup error:', setupError)
@@ -161,8 +175,12 @@ export async function executeUserQuery(username: string, query: string): Promise
     processedQuery = processedQuery.replace(/^(here's|here is|the sql query is|sql query:)/i, '')
     processedQuery = processedQuery.replace(/\n\s*$/g, '') // Remove trailing whitespace
 
+    // MANDATORY: Prepend SET search_path to every user query
+    const setPathCommand = `SET search_path TO "${schemaName}"`
+    const queryWithPath = `${setPathCommand}; ${processedQuery}`
+
     // Split the query string into individual statements
-    const queries = processedQuery.split(';').map(q => q.trim()).filter(q => q.length > 0);
+    const queries = queryWithPath.split(';').map(q => q.trim()).filter(q => q.length > 0);
 
     if (queries.length === 0) {
       return {

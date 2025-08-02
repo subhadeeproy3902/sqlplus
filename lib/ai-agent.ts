@@ -22,17 +22,24 @@ async function getTablesForUser(username: string) {
     const sql = neon(url)
 
     // Set search path and get tables
-    await sql`SET search_path TO ${schemaName}`
-    const result = await sql`
-      SELECT table_name
-      FROM information_schema.tables
-      WHERE table_schema = ${schemaName}
-      AND table_type = 'BASE TABLE'
-      ORDER BY table_name
-    `
+    const setPathTemplate = Object.assign([`SET search_path TO "${schemaName}"`], { raw: [`SET search_path TO "${schemaName}"`] })
+    await sql(setPathTemplate as TemplateStringsArray)
+
+    const tablesTemplate = Object.assign([`
+      SELECT tablename
+      FROM pg_tables
+      WHERE schemaname = '${schemaName}'
+      ORDER BY tablename
+    `], { raw: [`
+      SELECT tablename
+      FROM pg_tables
+      WHERE schemaname = '${schemaName}'
+      ORDER BY tablename
+    `] })
+    const result = await sql(tablesTemplate as TemplateStringsArray)
 
     console.log('Query result:', result)
-    const tables = result.map((row: any) => row.table_name)
+    const tables = result.map((row: any) => row.tablename)
     console.log('Extracted tables:', tables)
     return tables
   } catch (error) {
@@ -138,7 +145,7 @@ export async function generateSQLWithAgent(username: string, prompt: string) {
 
     try {
       const sqlResult = await generateText({
-        model: groq('llama-3.1-70b-versatile'), // Use stable model
+        model: groq('meta-llama/llama-4-scout-17b-16e-instruct'), // Use stable model
         prompt: `You are an expert PostgreSQL assistant. Generate ONLY the SQL query for this request.
 
 USER REQUEST: "${prompt}"

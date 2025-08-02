@@ -17,17 +17,16 @@ export async function POST(request: NextRequest) {
 
     // Get all tables in the user's schema using secure executeUserQuery
     const query = `
-      SELECT table_name
-      FROM information_schema.tables
-      WHERE table_schema = '${schemaName}'
-      AND table_type = 'BASE TABLE'
-      ORDER BY table_name
+      SELECT tablename
+      FROM pg_tables
+      WHERE schemaname = '${schemaName}'
+      ORDER BY tablename
     `
 
     const result = await executeUserQuery(username, query)
 
     if (result.success && result.data) {
-      const tables = result.data.map((row: any) => row.table_name)
+      const tables = result.data.map((row: any) => row.tablename)
       return NextResponse.json({
         success: true,
         tables

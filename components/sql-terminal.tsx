@@ -168,7 +168,7 @@ export default function SQLTerminal() {
           setCurrentInput(prev => prev + '\n');
         } else {
           // Enter alone:
-          const isSpecialCommand = ['exit', 'quit', 'clear scr', 'clear screen', 'help'].includes(trimmedInput.toLowerCase());
+          const isSpecialCommand = ['exit', 'quit', 'clear scr', 'clear screen', 'help', 'show tables'].includes(trimmedInput.toLowerCase());
           if (trimmedInput.endsWith(';') || isSpecialCommand) {
             // Command is complete, execute it
             handleCommand();
@@ -487,13 +487,13 @@ export default function SQLTerminal() {
     }
 
     if (commandToCheck === 'show tables') {
-      // Execute a query to show user's tables
+      // Execute a query to show user's tables using pg_tables
+      const currentUserName = (authState.username || '').replace(/[^a-zA-Z0-9_]/g, '_');
       const showTablesQuery = `
-        SELECT table_name
-        FROM information_schema.tables
-        WHERE table_schema = '${(authState.username || '').replace(/[^a-zA-Z0-9_]/g, '_')}'
-        AND table_type = 'BASE TABLE'
-        ORDER BY table_name
+        SELECT tablename
+        FROM pg_tables
+        WHERE schemaname = '${currentUserName}'
+        ORDER BY tablename
       `;
 
       setIsExecutingSQL(true)
