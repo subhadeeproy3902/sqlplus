@@ -5,17 +5,25 @@ import { formatQueryResult } from '@/lib/sql-executor'
 import { isAICommand, extractAIPrompt } from '@/lib/ai-sql-generator'
 import { ThemeToggle } from './theme-toggle'
 import HelpModal from './Helpmodal'
+import Loader from './Loader'
 
 interface TerminalLine {
   type: 'output' | 'input' | 'error' | 'success'
   content: string
   timestamp?: Date
+  isLoader?: boolean
+  loaderMessage?: string
 }
 
 interface AuthState {
   isAuthenticated: boolean
   username: string | null
   isRegistering: boolean
+}
+
+interface HistoryItem {
+  fullCommand: string
+  lastLine: string
 }
 
 export default function SQLTerminal() {
@@ -48,8 +56,9 @@ export default function SQLTerminal() {
   ])
   
   const [currentInput, setCurrentInput] = useState('')
-  const [commandHistory, setCommandHistory] = useState<string[]>([])
+  const [commandHistory, setCommandHistory] = useState<HistoryItem[]>([])
   const [historyIndex, setHistoryIndex] = useState(-1)
+  const [showingFullCommand, setShowingFullCommand] = useState(false)
   const [authState, setAuthState] = useState<AuthState>({
     isAuthenticated: false,
     username: null,
@@ -60,6 +69,8 @@ export default function SQLTerminal() {
   const [isPasswordInput, setIsPasswordInput] = useState(false)
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false); // State for HelpModal
   const [currentLineNumber, setCurrentLineNumber] = useState(1); // For auto-numbering
+  const [isLoading, setIsLoading] = useState(false); // Loading state for API calls
+  const [isExecutingSQL, setIsExecutingSQL] = useState(false); // Loading state for SQL execution
   
   const inputRef = useRef<HTMLTextAreaElement>(null) // Changed to HTMLTextAreaElement
   const terminalRef = useRef<HTMLDivElement>(null)
@@ -92,10 +103,13 @@ export default function SQLTerminal() {
 
   useEffect(() => {
     if (!authState.isAuthenticated && authStep === 'ask') {
-      // New:
-      addLine('output', 'Welcome! Type LOGIN to sign in or REGISTER to create an account.')
+      // Only add welcome message if there are no existing lines or if the last line is not the welcome message
+      const lastLine = lines[lines.length - 1]
+      if (!lastLine || lastLine.content !== 'Welcome! Type LOGIN to sign in or REGISTER to create an account.') {
+        addLine('output', 'Welcome! Type LOGIN to sign in or REGISTER to create an account.')
+      }
     }
-  }, [authState.isAuthenticated, authStep])
+  }, [authState.isAuthenticated, authStep, lines])
 
   const addLine = (type: TerminalLine['type'], content: string) => {
     setLines(prev => [...prev, { type, content, timestamp: new Date() }])
@@ -161,38 +175,97 @@ export default function SQLTerminal() {
             // currentLineNumber will be reset in handleCommand
           } else {
             // Command is not complete, start or continue auto-numbering
-            setCurrentLineNumber(prevLineNum => {
-              const nextLineNum = prevLineNum + 1;
+            if (currentInput.trim()) { // Only add numbering if there's content
+              const nextLineNum = currentLineNumber + 1;
               setCurrentInput(prevInput => `${prevInput}\n${nextLineNum}) `);
-              return nextLineNum;
-            });
+              setCurrentLineNumber(nextLineNum);
+            }
           }
         }
         return; // Exclusive action for Enter when authenticated
       }
     }
 
-    // Command History (ArrowUp/ArrowDown) - Active if input is empty, regardless of auth state (after specific Enter/Tab handling)
-    // This block is reached if not authenticated and key wasn't Enter/Tab/Shift+Enter,
-    // OR if authenticated and key wasn't Tab/Enter.
-    if (currentInput === '') {
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        if (commandHistory.length > 0 && historyIndex < commandHistory.length - 1) {
-          const newIndex = historyIndex + 1;
-          setHistoryIndex(newIndex);
-          setCurrentInput(commandHistory[commandHistory.length - 1 - newIndex]);
+    // Command History (ArrowUp/ArrowDown) - Always active for better UX
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (commandHistory.length > 0 && historyIndex < commandHistory.length - 1) {
+        const newIndex = historyIndex + 1;
+        setHistoryIndex(newIndex);
+        const historyItem = commandHistory[commandHistory.length - 1 - newIndex];
+        // For authenticated users (SQL mode), show only the last line initially
+        // For unauthenticated users, show the full command
+        if (authState.isAuthenticated) {
+          setCurrentInput(historyItem.lastLine);
+          setShowingFullCommand(false);
+        } else {
+          setCurrentInput(historyItem.fullCommand);
         }
-      } else if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        if (historyIndex > 0) {
-          const newIndex = historyIndex - 1;
-          setHistoryIndex(newIndex);
-          setCurrentInput(commandHistory[commandHistory.length - 1 - newIndex]);
-        } else if (historyIndex === 0) { // Was at the first history item, now going "down" to empty
-          setHistoryIndex(-1);
-          setCurrentInput('');
+        // Focus and select all text for immediate replacement
+        setTimeout(() => {
+          if (inputRef.current) {
+            inputRef.current.focus();
+            inputRef.current.select();
+          }
+        }, 0);
+      } else if (authState.isAuthenticated && historyIndex >= 0 && !showingFullCommand) {
+        // If already at the latest history item and in SQL mode, toggle to show full command
+        const historyItem = commandHistory[commandHistory.length - 1 - historyIndex];
+        if (historyItem.fullCommand !== historyItem.lastLine) {
+          setCurrentInput(historyItem.fullCommand);
+          setShowingFullCommand(true);
+          // Focus and select all text for immediate replacement
+          setTimeout(() => {
+            if (inputRef.current) {
+              inputRef.current.focus();
+              inputRef.current.select();
+            }
+          }, 0);
         }
+      }
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (showingFullCommand && authState.isAuthenticated) {
+        // If showing full command, go back to last line
+        const historyItem = commandHistory[commandHistory.length - 1 - historyIndex];
+        setCurrentInput(historyItem.lastLine);
+        setShowingFullCommand(false);
+        // Focus and select all text for immediate replacement
+        setTimeout(() => {
+          if (inputRef.current) {
+            inputRef.current.focus();
+            inputRef.current.select();
+          }
+        }, 0);
+      } else if (historyIndex > 0) {
+        const newIndex = historyIndex - 1;
+        setHistoryIndex(newIndex);
+        const historyItem = commandHistory[commandHistory.length - 1 - newIndex];
+        // For authenticated users (SQL mode), show only the last line
+        // For unauthenticated users, show the full command
+        if (authState.isAuthenticated) {
+          setCurrentInput(historyItem.lastLine);
+          setShowingFullCommand(false);
+        } else {
+          setCurrentInput(historyItem.fullCommand);
+        }
+        // Focus and select all text for immediate replacement
+        setTimeout(() => {
+          if (inputRef.current) {
+            inputRef.current.focus();
+            inputRef.current.select();
+          }
+        }, 0);
+      } else if (historyIndex === 0) { // Was at the first history item, now going "down" to empty
+        setHistoryIndex(-1);
+        setCurrentInput('');
+        setShowingFullCommand(false);
+        // Focus the input
+        setTimeout(() => {
+          if (inputRef.current) {
+            inputRef.current.focus();
+          }
+        }, 0);
       }
     }
     // Other keys (letters, numbers, backspace, etc.) will be handled natively by the textarea.
@@ -212,6 +285,7 @@ export default function SQLTerminal() {
     // Clear input *immediately* after command is captured
     setCurrentInput('');
     setHistoryIndex(-1); // Reset history index as well
+    setShowingFullCommand(false); // Reset full command state
     if (inputRef.current) { // Reset height after command submission
         inputRef.current.style.height = 'auto';
     }
@@ -271,15 +345,22 @@ export default function SQLTerminal() {
   }
 
   const handleLogin = async (username: string, password: string) => {
+    setIsLoading(true)
+    // Add loader instead of text
+    setLines(prevLines => [...prevLines, { type: 'output', content: '', isLoader: true, loaderMessage: 'Connecting...' }])
+
     try {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
       })
-      
+
       const result = await response.json()
-      
+
+      // Remove loader
+      setLines(prevLines => prevLines.filter(line => !line.isLoader))
+
       if (result.success) {
         setAuthState({
           isAuthenticated: true,
@@ -299,21 +380,32 @@ export default function SQLTerminal() {
         resetAuth()
       }
     } catch (error) {
+      // Remove loader
+      setLines(prevLines => prevLines.filter(line => !line.isLoader))
       addLine('error', 'Connection failed')
       resetAuth()
+    } finally {
+      setIsLoading(false)
     }
   }
 
   const handleRegister = async (username: string, password: string) => {
+    setIsLoading(true)
+    // Add loader instead of text
+    setLines(prevLines => [...prevLines, { type: 'output', content: '', isLoader: true, loaderMessage: 'Creating account...' }])
+
     try {
       const response = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
       })
-      
+
       const result = await response.json()
-      
+
+      // Remove loader
+      setLines(prevLines => prevLines.filter(line => !line.isLoader))
+
       if (result.success) {
         setAuthState({
           isAuthenticated: true,
@@ -334,8 +426,12 @@ export default function SQLTerminal() {
         resetAuth()
       }
     } catch (error) {
+      // Remove loader
+      setLines(prevLines => prevLines.filter(line => !line.isLoader))
       addLine('error', 'Account creation failed')
       resetAuth()
+    } finally {
+      setIsLoading(false)
     }
   }
 
@@ -347,8 +443,7 @@ export default function SQLTerminal() {
       isRegistering: false,
     });
     setTempUsername('');
-    // New:
-    addLine('output', 'Welcome! Type LOGIN to sign in or REGISTER to create an account.');
+    // Welcome message will be added by useEffect when authStep changes to 'ask'
   }
 
   const handleSQLCommand = async (input: string) => {
@@ -366,8 +461,15 @@ export default function SQLTerminal() {
 
     // Add to command history (only for SQL commands)
     // Use the cleanedInput for history to store the executable version
-    if (cleanedInput && !commandHistory.includes(cleanedInput)) {
-      setCommandHistory(prev => [...prev, cleanedInput]);
+    if (cleanedInput && !commandHistory.some(item => item.fullCommand === cleanedInput)) {
+      // Extract the last line for history navigation
+      const lines = cleanedInput.split('\n');
+      const lastLine = lines[lines.length - 1].trim();
+
+      setCommandHistory(prev => [...prev, {
+        fullCommand: cleanedInput,
+        lastLine: lastLine || cleanedInput // Fallback to full command if last line is empty
+      }]);
     }
 
     // Handle special commands using the original input for commands like "clear scr"
@@ -384,6 +486,53 @@ export default function SQLTerminal() {
       return;
     }
 
+    if (commandToCheck === 'show tables') {
+      // Execute a query to show user's tables
+      const showTablesQuery = `
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = '${(authState.username || '').replace(/[^a-zA-Z0-9_]/g, '_')}'
+        AND table_type = 'BASE TABLE'
+        ORDER BY table_name
+      `;
+
+      setIsExecutingSQL(true)
+      setLines(prevLines => [...prevLines, { type: 'output', content: '', isLoader: true, loaderMessage: 'Getting your tables...' }])
+
+      try {
+        const response = await fetch('/api/sql/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: authState.username,
+            query: showTablesQuery
+          })
+        })
+
+        const result = await response.json()
+
+        // Remove loader
+        setLines(prevLines => prevLines.filter(line => !line.isLoader))
+
+        const formattedResult = formatQueryResult(result)
+
+        if (result.success) {
+          addLine('output', await formattedResult)
+        } else {
+          addLine('error', await formattedResult)
+        }
+
+        addLine('output', '')
+      } catch (error) {
+        setLines(prevLines => prevLines.filter(line => !line.isLoader))
+        addLine('error', 'ERROR: Failed to get tables')
+        addLine('output', '')
+      } finally {
+        setIsExecutingSQL(false)
+      }
+      return;
+    }
+
     if (commandToCheck === 'exit' || commandToCheck === 'quit') {
       addLine('output', 'Disconnected from Oracle Database 21c Express Edition Release 21.0.0.0.0 - Production');
       setAuthState({
@@ -393,8 +542,7 @@ export default function SQLTerminal() {
       });
       setAuthStep('ask');
       addLine('output', '');
-      // Update to the new standard auth prompt
-      addLine('output', 'Welcome! Type LOGIN to sign in or REGISTER to create an account.');
+      // Welcome message will be added by useEffect when authStep changes to 'ask'
       return;
     }
 
@@ -412,6 +560,9 @@ export default function SQLTerminal() {
       addLine('output', '  /ai create a users table with id and name');
       addLine('output', '  /ai find all records where name contains John');
       addLine('output', '');
+      addLine('output', 'Quick commands:');
+      addLine('output', '  SHOW TABLES - Show all your tables');
+      addLine('output', '');
       // Now also open the modal:
       setIsHelpModalOpen(true);
       return; // Prevent further processing of "help" as a SQL query
@@ -427,6 +578,11 @@ export default function SQLTerminal() {
       return;
     }
 
+    // Execute the SQL query
+    setIsExecutingSQL(true)
+    // Add loader instead of text
+    setLines(prevLines => [...prevLines, { type: 'output', content: '', isLoader: true, loaderMessage: 'Executing query...' }])
+
     try {
       const response = await fetch('/api/sql/execute', {
         method: 'POST',
@@ -435,91 +591,34 @@ export default function SQLTerminal() {
           username: authState.username,
           query: cleanedInput // Use the cleaned SQL query
         })
-      });
-      setCommandHistory(prev => [...prev, input])
-    } catch (error) {
-      addLine('error', 'ERROR: Failed to execute query');
-      addLine('output', '');
-      return; // Exit early on fetch error
-    }
-
-    // Handle special commands
-    if (input.toLowerCase() === 'clear scr' || input.toLowerCase() === 'clear screen') {
-      setLines([])
-      return
-    }
-
-    if (input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit') {
-      addLine('output', 'Disconnected from Oracle Database 21c Express Edition Release 21.0.0.0.0 - Production')
-      setAuthState({
-        isAuthenticated: false,
-        username: null,
-        isRegistering: false
       })
-      setAuthStep('ask')
-      addLine('output', '')
-      // Update to the new standard auth prompt
-      addLine('output', 'Welcome! Type LOGIN to sign in or REGISTER to create an account.');
-      return
-    }
 
-    if (input.toLowerCase() === 'help') {
-      // The existing help text added via addLine can remain as a quick reference
-      addLine('output', 'Available commands:')
-      addLine('output', '  SQL commands - Execute any SQL query')
-      addLine('output', '  /ai <prompt> - Generate and execute SQL using AI')
-      addLine('output', '  clear scr - Clear the screen')
-      addLine('output', '  help - Show this help message (also opens detailed help)')
-      addLine('output', '  exit - Disconnect and logout')
-      addLine('output', '')
-      addLine('output', 'AI Examples:')
-      addLine('output', '  /ai show me all tables')
-      addLine('output', '  /ai create a users table with id and name')
-      addLine('output', '  /ai find all records where name contains John')
-      addLine('output', '')
-      // Now also open the modal:
-      setIsHelpModalOpen(true);
-      return; // Prevent further processing of "help" as a SQL query
-    }
-
-    if (!input) {
-      return
-    }
-
-    // Handle AI commands
-    if (isAICommand(input)) {
-      await handleAICommand(input)
-      return
-    }
-
-    try {
-      const response = await fetch('/api/sql/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          username: authState.username, 
-          query: input 
-        })
-      })
-      
       const result = await response.json()
+
+      // Remove loader
+      setLines(prevLines => prevLines.filter(line => !line.isLoader))
+
       const formattedResult = formatQueryResult(result)
-      
+
       if (result.success) {
         addLine('output', await formattedResult)
       } else {
         addLine('error', await formattedResult)
       }
-      
+
       addLine('output', '')
     } catch (error) {
+      // Remove loader
+      setLines(prevLines => prevLines.filter(line => !line.isLoader))
       addLine('error', 'ERROR: Failed to execute query')
       addLine('output', '')
+    } finally {
+      setIsExecutingSQL(false)
     }
   }
 
-  const handleAICommand = async (input: string) => {
-    const prompt = extractAIPrompt(input)
+  const handleAICommand = async (input: string, retryContext?: { originalPrompt: string, previousError: string, previousQuery: string, retryCount: number }) => {
+    const prompt = retryContext ? retryContext.originalPrompt : extractAIPrompt(input)
 
     if (!prompt) {
       addLine('error', 'Please provide a prompt after /ai command. Example: /ai show me all users')
@@ -527,54 +626,162 @@ export default function SQLTerminal() {
       return
     }
 
-    addLine('output', `🤖 Generating SQL for: "${prompt}"`)
-    addLine('output', '')
+    const isRetry = !!retryContext
+    const retryCount = retryContext?.retryCount || 0
+    const maxRetries = 2
+
+    // Only show initial message for first attempt, not retries
+    if (!isRetry) {
+      addLine('output', `🤖 Generating SQL for: "${prompt}"`)
+      addLine('output', '')
+      // Add loader component instead of text
+      setLines(prevLines => [...prevLines, { type: 'output', content: '', isLoader: true, loaderMessage: 'Generating SQL...' }])
+    }
 
     try {
-      const response = await fetch('/api/ai/generate-sql', {
+      // Use the new agentic AI system for first attempt, fallback for retries
+      const endpoint = isRetry ? '/api/ai/generate-sql' : '/api/ai/agent'
+
+      const requestBody: any = {
+        username: authState.username,
+        prompt
+      }
+
+      if (retryContext) {
+        requestBody.previousError = retryContext.previousError
+        requestBody.previousQuery = retryContext.previousQuery
+      }
+
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: authState.username,
-          prompt
-        })
+        body: JSON.stringify(requestBody)
       })
 
       const result = await response.json()
 
       if (result.success && result.sqlQuery) {
-        addLine('success', `Generated SQL: ${result.sqlQuery}`)
-        addLine('output', '')
-        addLine('output', 'Executing query...')
-        addLine('output', '')
+        // Remove loader if it exists (only for first attempt)
+        if (!isRetry) {
+          setLines(prevLines => prevLines.filter(line => !line.isLoader))
+        }
 
-        // Execute the generated SQL
-        const executeResponse = await fetch('/api/sql/execute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            username: authState.username,
-            query: result.sqlQuery
+        // Show generated SQL for first attempt
+        if (!isRetry) {
+          addLine('success', `Generated SQL: ${result.sqlQuery}`)
+          addLine('output', '')
+        }
+
+        // For agent response, execution result is already included
+        let executeResult
+        if (result.executionResult) {
+          // Agent already executed the query
+          executeResult = result.executionResult
+          // Remove any remaining loaders
+          setLines(prevLines => prevLines.filter(line => !line.isLoader))
+        } else {
+          // Fallback: execute manually (for retry cases)
+          if (!isRetry) {
+            setLines(prevLines => [...prevLines, { type: 'output', content: '', isLoader: true, loaderMessage: 'Executing query...' }])
+          }
+
+          const executeResponse = await fetch('/api/sql/execute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              username: authState.username,
+              query: result.sqlQuery
+            })
           })
-        })
 
-        const executeResult = await executeResponse.json()
+          executeResult = await executeResponse.json()
+          // Remove execution loader
+          setLines(prevLines => prevLines.filter(line => !line.isLoader))
+        }
+
         const formattedResult = formatQueryResult(executeResult)
 
         if (executeResult.success) {
           addLine('output', await formattedResult)
+          if (isRetry) {
+            addLine('success', `✅ Query executed successfully after ${retryCount} ${retryCount === 1 ? 'retry' : 'retries'}!`)
+          }
         } else {
-          addLine('error', await formattedResult)
+          // If execution failed and we haven't exceeded max retries, try again silently
+          if (retryCount < maxRetries) {
+            // Retry with error context without showing intermediate messages
+            await handleAICommand(input, {
+              originalPrompt: prompt,
+              previousError: executeResult.error || 'Unknown database error',
+              previousQuery: result.sqlQuery,
+              retryCount: retryCount + 1
+            })
+            return
+          } else {
+            // Final failure after all retries
+            addLine('error', await formattedResult)
+            addLine('error', `❌ Failed to generate working query after ${maxRetries} retries.`)
+            addLine('output', 'Try rephrasing your request or check if the tables/columns exist.')
+          }
         }
       } else {
-        addLine('error', `AI Error: ${result.error || 'Failed to generate SQL'}`)
-        if (result.explanation) {
-          addLine('output', result.explanation)
+        // Remove loader if it exists
+        if (!isRetry) {
+          setLines(prevLines => prevLines.filter(line => !line.isLoader))
+        }
+
+        // If agent failed and this is the first attempt, try the fallback silently
+        if (!isRetry) {
+          try {
+            const fallbackResponse = await fetch('/api/ai/generate-sql', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                username: authState.username,
+                prompt
+              })
+            })
+
+            const fallbackResult = await fallbackResponse.json()
+
+            if (fallbackResult.success && fallbackResult.sqlQuery) {
+              addLine('success', `Generated SQL: ${fallbackResult.sqlQuery}`)
+              addLine('output', '')
+              setLines(prevLines => [...prevLines, { type: 'output', content: '', isLoader: true, loaderMessage: 'Executing query...' }])
+
+              const executeResponse = await fetch('/api/sql/execute', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  username: authState.username,
+                  query: fallbackResult.sqlQuery
+                })
+              })
+
+              const executeResult = await executeResponse.json()
+              setLines(prevLines => prevLines.filter(line => !line.isLoader))
+              const formattedResult = formatQueryResult(executeResult)
+
+              if (executeResult.success) {
+                addLine('output', await formattedResult)
+              } else {
+                addLine('error', await formattedResult)
+              }
+            } else {
+              addLine('error', `AI Error: ${result.error || 'Failed to generate SQL'}`)
+            }
+          } catch (fallbackError) {
+            addLine('error', `AI Error: ${result.error || 'Failed to generate SQL'}`)
+          }
+        } else {
+          addLine('error', `AI Error: ${result.error || 'Failed to generate SQL'}`)
         }
       }
 
       addLine('output', '')
     } catch (error) {
+      // Remove loader if it exists
+      setLines(prevLines => prevLines.filter(line => !line.isLoader))
       addLine('error', 'ERROR: Failed to process AI command')
       addLine('output', '')
     }
@@ -616,24 +823,30 @@ export default function SQLTerminal() {
                 'text-black dark:text-white' // Default for 'input' and 'output'
               }`}
             >
-              {line.content}
+              {line.isLoader ? (
+                <Loader message={line.loaderMessage} />
+              ) : (
+                line.content
+              )}
             </div>
           );
         })}
-        {/* Input area styling: Added px-2 pb-2 pt-1 and items-start */}
-        <div className="flex items-start text-black dark:text-white px-2 pb-2 pt-1">
-          <span className="text-black dark:text-white">{getPrompt()}</span>
-          {/* Replaced input with textarea */}
-          <textarea
+        {/* Input area styling: Added px-2 pb-2 pt-1 and items-start - Only show when not loading */}
+        {!isLoading && !isExecutingSQL && !lines.some(line => line.isLoader) && (
+          <div className="flex items-start text-black dark:text-white px-2 pb-2 pt-1">
+            <span className="text-black dark:text-white">{getPrompt()}</span>
+            {/* Replaced input with textarea */}
+            <textarea
             ref={inputRef}
             rows={1}
             value={currentInput}
             onChange={(e) => setCurrentInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            className="bg-transparent border-none outline-none flex-1 text-black dark:text-white caret-black dark:caret-white resize-none overflow-y-hidden font-mono"
+            disabled={isLoading || isExecutingSQL}
+            className={`bg-transparent border-none outline-none flex-1 text-black dark:text-white caret-black dark:caret-white resize-none overflow-y-hidden font-mono ${(isLoading || isExecutingSQL) ? 'opacity-50 cursor-not-allowed' : ''}`}
             autoComplete="off"
             spellCheck={false}
-            style={isPasswordInput ? { 
+            style={isPasswordInput ? {
               WebkitTextSecurity: 'disc',
               fontFamily: 'monospace' // Ensure monospace for consistent masking char width
             } : {
@@ -644,8 +857,13 @@ export default function SQLTerminal() {
             // This is a limitation if we need to keep textarea + password masking.
             // For now, following subtask to change to textarea. Password masking in display (lines) is separate.
           />
-          <span className="animate-pulse text-black dark:text-white">█</span>
-        </div>
+          {(isLoading || isExecutingSQL) ? (
+            <span className="animate-spin text-black dark:text-white">⟳</span>
+          ) : (
+            <span className="animate-pulse text-black dark:text-white">█</span>
+          )}
+          </div>
+        )}
       </div>
     </div>
   )

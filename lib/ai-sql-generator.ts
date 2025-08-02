@@ -15,9 +15,11 @@ export interface AIQueryResult {
 }
 
 export async function generateSQLFromPrompt(
-  username: string, 
-  prompt: string, 
-  history?: PromptHistoryItem[]
+  username: string,
+  prompt: string,
+  history?: PromptHistoryItem[],
+  previousError?: string,
+  previousQuery?: string
 ): Promise<AIQueryResult> {
   try {
     // API Key Check for Groq
@@ -42,21 +44,47 @@ export async function generateSQLFromPrompt(
     messages.push({ role: 'user', content: prompt });
     
     // System prompt should not contain the user's latest question if using messages array
-    const baseSystemPrompt = `You are Mastra AI, an expert PostgreSQL SQL query generator. Your only job is to convert natural language questions into valid PostgreSQL queries.  
+    let baseSystemPrompt = `You are Mastra AI, an expert PostgreSQL SQL query generator. Your only job is to convert natural language questions into valid PostgreSQL queries.
 
-Database Schema Information:  
-${schemaDescription}  
+Database Schema Information (User-Specific Schema):
+${schemaDescription}
 
-Instructions:  
-1. Output only the SQL query. Do not include explanations, markdown formatting, or any extra text.  
-2. Use PostgreSQL syntax.  
-3. Follow the schema exactly. If a requested table or column is missing, return only a SQL comment like -- Query cannot be formed due to missing schema elements.  
-4. Use double quotes for case-sensitive or special character names.  
-5. Select only the columns requested or required. Do not use SELECT * unless explicitly asked.  
-6. Include necessary clauses like WHERE, JOIN, GROUP BY, ORDER BY, LIMIT as needed.  
-7. If the request is too ambiguous, return -- Request is too ambiguous to generate a query.  
-8. Default to SELECT unless the user explicitly asks for insert, update, delete, or create.  
-9. Only output the correct SQL code, nothing before or after.`;
+PRIVACY AND SECURITY REQUIREMENTS:
+- You can ONLY access tables in the user's private schema shown above
+- NEVER reference other schemas, system tables, or public tables
+- DO NOT use schema prefixes (e.g., schema.table) in your queries
+- All table references should be unqualified (just table names)
+- The user's data is completely isolated from other users
+
+Instructions:
+1. Output only the SQL query. Do not include explanations, markdown formatting, or any extra text.
+2. Use PostgreSQL syntax.
+3. Follow the schema exactly. If a requested table or column is missing, return only a SQL comment like -- Query cannot be formed due to missing schema elements.
+4. Use double quotes for case-sensitive or special character names.
+5. Select only the columns requested or required. Do not use SELECT * unless explicitly asked.
+6. Include necessary clauses like WHERE, JOIN, GROUP BY, ORDER BY, LIMIT as needed.
+7. If the request is too ambiguous, return -- Request is too ambiguous to generate a query.
+8. Default to SELECT unless the user explicitly asks for insert, update, delete, or create.
+9. Only output the correct SQL code, nothing before or after.
+10. NEVER attempt to access system tables, information_schema, pg_catalog, or any other user's data.`;
+
+    // If there's a previous error, modify the prompt to include error correction context
+    if (previousError && previousQuery) {
+      baseSystemPrompt += `
+
+ERROR CORRECTION MODE:
+The previous query failed with this error: "${previousError}"
+The failed query was: "${previousQuery}"
+
+Please analyze the error and generate a corrected version of the query that addresses the specific error. Common fixes include:
+- Fixing syntax errors
+- Using correct table/column names from the schema
+- Adjusting data types
+- Fixing constraint violations
+- Correcting JOIN conditions
+
+Generate only the corrected SQL query.`;
+    }
 
 
     const result = await generateText({
@@ -117,4 +145,44 @@ export function isAICommand(input: string): boolean {
 
 export function extractAIPrompt(input: string): string {
   return input.trim().substring(4).trim() // Remove '/ai ' prefix
+}
+
+// New function for conversational AI-database workflow with error handling
+export async function generateSQLWithErrorHandling(
+  username: string,
+  prompt: string,
+  history?: PromptHistoryItem[],
+  maxRetries: number = 2
+): Promise<AIQueryResult & { retryCount?: number }> {
+  let retryCount = 0;
+  let lastError: string | undefined;
+  let lastQuery: string | undefined;
+
+  while (retryCount <= maxRetries) {
+    try {
+      // Generate SQL query (with error context if this is a retry)
+      const result = await generateSQLFromPrompt(username, prompt, history, lastError, lastQuery);
+
+      if (!result.success) {
+        return { ...result, retryCount };
+      }
+
+      // For now, return the query without dry run testing since we need to implement that in the API
+      // The error handling will happen when the query is actually executed
+      return { ...result, retryCount };
+
+    } catch (error) {
+      return {
+        success: false,
+        error: `Error in AI-database conversation: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        retryCount
+      };
+    }
+  }
+
+  return {
+    success: false,
+    error: 'Maximum retries exceeded',
+    retryCount
+  };
 }

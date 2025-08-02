@@ -3,10 +3,12 @@ import { generateSQLFromPrompt, PromptHistoryItem } from '@/lib/ai-sql-generator
 
 export async function POST(request: NextRequest) {
   try {
-    const { username, prompt, history } = await request.json() as {
+    const { username, prompt, history, previousError, previousQuery } = await request.json() as {
       username: string;
       prompt: string;
       history?: PromptHistoryItem[];
+      previousError?: string;
+      previousQuery?: string;
     }
 
     if (!username || !prompt) {
@@ -16,8 +18,8 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // History is optional, so it might be undefined
-    const result = await generateSQLFromPrompt(username, prompt, history)
+    // History and error context are optional, so they might be undefined
+    const result = await generateSQLFromPrompt(username, prompt, history, previousError, previousQuery)
     
     return NextResponse.json(result, { 
       status: result.success ? 200 : 400 

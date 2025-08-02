@@ -18,11 +18,76 @@ export interface QueryResult {
   rowCount?: number
 }
 
+// Function to validate that queries only access user's own schema
+function validateUserSchemaAccess(query: string, username: string): { isValid: boolean; error?: string } {
+  const cleanQuery = query.toLowerCase().trim();
+  const schemaName = username.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+
+  // Check for explicit schema references that are not the user's schema
+  const schemaPattern = /(\w+)\.(\w+)/g;
+  let match;
+
+  while ((match = schemaPattern.exec(cleanQuery)) !== null) {
+    const referencedSchema = match[1];
+    // Allow information_schema for specific allowed queries (checked later)
+    // If the referenced schema is not the user's schema and not information_schema, block it
+    if (referencedSchema !== schemaName && referencedSchema !== 'public' && referencedSchema !== 'information_schema') {
+      return {
+        isValid: false,
+        error: `Access denied: Cannot access schema '${referencedSchema}'. You can only access your own schema '${schemaName}'.`
+      };
+    }
+  }
+
+  // Allow specific queries for user's own schema information ONLY
+  const allowedSchemaQueries = [
+    // Allow user to query their own tables from information_schema
+    new RegExp(`information_schema\\.tables.*table_schema\\s*=\\s*'${schemaName}'`, 'i'),
+    new RegExp(`information_schema\\.columns.*table_schema\\s*=\\s*'${schemaName}'`, 'i'),
+    new RegExp(`information_schema\\.key_column_usage.*table_schema\\s*=\\s*'${schemaName}'`, 'i'),
+    new RegExp(`information_schema\\.table_constraints.*table_schema\\s*=\\s*'${schemaName}'`, 'i'),
+    // Allow user to query their own tables from pg_tables
+    new RegExp(`pg_tables.*schemaname\\s*=\\s*'${schemaName}'`, 'i'),
+    new RegExp(`pg_tables.*schemaname\\s*=\\s*'${username}'`, 'i'), // Also allow original username
+    // Allow current_schema references (AI agent uses this)
+    new RegExp(`information_schema\\.tables.*table_schema\\s*=\\s*current_schema`, 'i'),
+    new RegExp(`information_schema\\.columns.*table_schema\\s*=\\s*current_schema`, 'i'),
+  ];
+
+  // Check if query contains information_schema or pg_ tables
+  if (/information_schema\.|pg_\w+/.test(cleanQuery)) {
+    // Check if it's an allowed query for user's own schema
+    const isAllowed = allowedSchemaQueries.some(pattern => pattern.test(cleanQuery));
+    if (!isAllowed) {
+      // Additional check: if it's information_schema.tables with user's schema, allow it
+      const userSchemaTableQuery = new RegExp(`information_schema\\.tables.*'${schemaName}'`, 'i');
+      if (userSchemaTableQuery.test(cleanQuery)) {
+        // This is allowed - user querying their own schema tables
+      } else {
+        return {
+          isValid: false,
+          error: 'Access denied: You can only access your own schema information for privacy protection.'
+        };
+      }
+    }
+  }
+
+  // Block access to public schema tables
+  if (/\bpublic\.\w+/.test(cleanQuery)) {
+    return {
+      isValid: false,
+      error: 'Access denied: Cannot access public schema for privacy protection.'
+    };
+  }
+
+  return { isValid: true };
+}
+
 export async function executeUserQuery(username: string, query: string): Promise<QueryResult> {
   try {
     // Clean and validate the query
     const cleanQuery = query.trim()
-    
+
     if (!cleanQuery) {
       return {
         success: false,
@@ -30,41 +95,74 @@ export async function executeUserQuery(username: string, query: string): Promise
       }
     }
 
-    // Check for dangerous operations that could affect other users
+    // Validate user schema access FIRST
+    const validation = validateUserSchemaAccess(cleanQuery, username);
+    if (!validation.isValid) {
+      return {
+        success: false,
+        error: validation.error || 'Access denied'
+      }
+    }
+
+    // Only block truly dangerous operations
     const dangerousPatterns = [
-      new RegExp(`drop\\s+schema\\s+(?!.*\\b${username}\\b)`, 'i'),
-      new RegExp(`create\\s+schema\\s+(?!.*\\b${username}\\b)`, 'i'),
-      new RegExp(`alter\\s+schema\\s+(?!.*\\b${username}\\b)`, 'i'),
       /drop\s+database/i,
       /create\s+database/i,
       /drop\s+user/i,
       /create\s+user/i,
       /grant/i,
-      /revoke/i
+      /revoke/i,
+      // Block access to sensitive system tables
+      /pg_authid/i,
+      /pg_shadow/i,
+      /pg_user/i,
     ]
 
+    // Check for dangerous operations
     for (const pattern of dangerousPatterns) {
       if (pattern.test(cleanQuery)) {
         return {
           success: false,
-          error: 'Operation not allowed'
+          error: 'Operation not allowed for security reasons'
         }
       }
     }
 
-    // Execute schema setup and user query separately (Neon doesn't allow multiple commands)
-    const schemaName = username.replace(/[^a-zA-Z0-9_]/g, '_') // Sanitize schema name
+    // Sanitize schema name
+    const schemaName = username.replace(/[^a-zA-Z0-9_]/g, '_')
 
-    // First, create schema if it doesn't exist
-    const createSchemaTemplate = Object.assign([`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`], { raw: [`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`] })
-    await sql(createSchemaTemplate as TemplateStringsArray)
+    // CRITICAL: Set up complete user isolation
+    try {
+      // Create user's schema if it doesn't exist
+      const createSchemaQuery = `CREATE SCHEMA IF NOT EXISTS "${schemaName}"`
+      const createTemplate = Object.assign([createSchemaQuery], { raw: [createSchemaQuery] })
+      await sql(createTemplate as TemplateStringsArray)
 
-    // Set search path to user schema
-    const setPathTemplate = Object.assign([`SET search_path TO "${schemaName}"`], { raw: [`SET search_path TO "${schemaName}"`] })
-    await sql(setPathTemplate as TemplateStringsArray)
+      // Set search path to ONLY user's schema - no public, no other schemas
+      const setPathQuery = `SET search_path TO "${schemaName}"`
+      const pathTemplate = Object.assign([setPathQuery], { raw: [setPathQuery] })
+      await sql(pathTemplate as TemplateStringsArray)
+
+    } catch (setupError) {
+      console.error('Schema setup error:', setupError)
+      return {
+        success: false,
+        error: 'Failed to set up user workspace'
+      }
+    }
+
+    // Clean up markdown code blocks and other formatting issues BEFORE splitting
+    let processedQuery = cleanQuery
+
+    // Remove markdown code blocks
+    processedQuery = processedQuery.replace(/```sql\s*/gi, '').replace(/```\s*/g, '')
+
+    // Remove common AI response prefixes/suffixes
+    processedQuery = processedQuery.replace(/^(here's|here is|the sql query is|sql query:)/i, '')
+    processedQuery = processedQuery.replace(/\n\s*$/g, '') // Remove trailing whitespace
 
     // Split the query string into individual statements
-    const queries = cleanQuery.split(';').map(q => q.trim()).filter(q => q.length > 0);
+    const queries = processedQuery.split(';').map(q => q.trim()).filter(q => q.length > 0);
 
     if (queries.length === 0) {
       return {
@@ -79,6 +177,7 @@ export async function executeUserQuery(username: string, query: string): Promise
 
     for (let i = 0; i < queries.length; i++) {
       const singleQuery = queries[i];
+
       try {
         // Add back the semicolon for execution if it's not a SET command,
         // as some drivers/DBs might prefer it, though Neon might not strictly need it.
