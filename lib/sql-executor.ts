@@ -40,18 +40,19 @@ function validateUserSchemaAccess(query: string, username: string): { isValid: b
   }
 
   // Allow specific queries for user's own schema information ONLY
+  // The 's' flag is used to allow '.' to match newline characters for multi-line queries
   const allowedSchemaQueries = [
     // Allow user to query their own tables from information_schema
-    new RegExp(`information_schema\\.tables.*table_schema\\s*=\\s*'${schemaName}'`, 'i'),
-    new RegExp(`information_schema\\.columns.*table_schema\\s*=\\s*'${schemaName}'`, 'i'),
-    new RegExp(`information_schema\\.key_column_usage.*table_schema\\s*=\\s*'${schemaName}'`, 'i'),
-    new RegExp(`information_schema\\.table_constraints.*table_schema\\s*=\\s*'${schemaName}'`, 'i'),
+    new RegExp(`information_schema\\.tables.*table_schema\\s*=\\s*'${schemaName}'`, 'is'),
+    new RegExp(`information_schema\\.columns.*table_schema\\s*=\\s*'${schemaName}'`, 'is'),
+    new RegExp(`information_schema\\.key_column_usage.*table_schema\\s*=\\s*'${schemaName}'`, 'is'),
+    new RegExp(`information_schema\\.table_constraints.*table_schema\\s*=\\s*'${schemaName}'`, 'is'),
     // Allow user to query their own tables from pg_tables
-    new RegExp(`pg_tables.*schemaname\\s*=\\s*'${schemaName}'`, 'i'),
-    new RegExp(`pg_tables.*schemaname\\s*=\\s*'${username}'`, 'i'), // Also allow original username
+    new RegExp(`pg_tables.*schemaname\\s*=\\s*'${schemaName}'`, 'is'),
+    new RegExp(`pg_tables.*schemaname\\s*=\\s*'${username}'`, 'is'), // Also allow original username
     // Allow current_schema references (AI agent uses this)
-    new RegExp(`information_schema\\.tables.*table_schema\\s*=\\s*current_schema`, 'i'),
-    new RegExp(`information_schema\\.columns.*table_schema\\s*=\\s*current_schema`, 'i'),
+    new RegExp(`information_schema\\.tables.*table_schema\\s*=\\s*current_schema`, 'is'),
+    new RegExp(`information_schema\\.columns.*table_schema\\s*=\\s*current_schema`, 'is'),
   ];
 
   // Check if query contains information_schema or pg_ tables
@@ -175,32 +176,67 @@ export async function executeUserQuery(username: string, query: string): Promise
     processedQuery = processedQuery.replace(/^(here's|here is|the sql query is|sql query:)/i, '')
     processedQuery = processedQuery.replace(/\n\s*$/g, '') // Remove trailing whitespace
 
-    // MANDATORY: Prepend SET search_path to every user query.
-    // This is executed as a single transaction to ensure the search_path is set
-    // for the user's query, which is critical in a stateless serverless environment.
-    const setPathCommand = `SET search_path TO "${schemaName}";`
-    const finalQuery = `${setPathCommand} ${processedQuery}`
+    // MANDATORY: Prepend SET search_path to every user query
+    const setPathCommand = `SET search_path TO "${schemaName}"`
+    const queryWithPath = `${setPathCommand}; ${processedQuery}`
 
-    // Execute the combined query
-    const queryTemplate = Object.assign([finalQuery], { raw: [finalQuery] });
-    const result = await sql(queryTemplate as TemplateStringsArray);
+    // Split the query string into individual statements
+    const queries = queryWithPath.split(';').map(q => q.trim()).filter(q => q.length > 0);
 
-    let message = 'Query executed successfully.';
-    if (Array.isArray(result)) {
-      if (result.length === 0 && !processedQuery.toUpperCase().includes('SELECT')) {
-        message = `Command executed successfully.`;
-      } else {
-        message = `${result.length} row(s) returned.`;
-      }
-    } else if (result && typeof result === 'object' && 'command' in result) {
-      message = `Command (${(result as any).command}) executed successfully.`;
+    if (queries.length === 0) {
+      return {
+        success: false,
+        error: 'Empty query or only semicolons provided'
+      };
     }
+
+    // Use a transaction to ensure all queries are executed in the same session
+    const transactionResults = await sql.transaction(async (tx) => {
+      let allResults: any[] = [];
+      let totalRowCount = 0;
+      let messages: string[] = [];
+
+      for (let i = 0; i < queries.length; i++) {
+        const singleQuery = queries[i];
+        if (singleQuery) { // Ensure query is not empty
+          try {
+            const queryToExecute = singleQuery.toUpperCase().startsWith('SET') ? singleQuery : `${singleQuery};`;
+            const template = Object.assign([queryToExecute], { raw: [queryToExecute] });
+            const result = await tx(template as TemplateStringsArray);
+
+            if (Array.isArray(result)) {
+              allResults = allResults.concat(result);
+              totalRowCount += result.length;
+              if (result.length === 0 && !singleQuery.toUpperCase().startsWith('SELECT')) {
+                messages.push(`Statement ${i + 1} executed successfully.`);
+              } else {
+                messages.push(`Statement ${i + 1}: ${result.length} row(s) returned.`);
+              }
+            } else if (result && typeof result === 'object' && 'command' in result) {
+              messages.push(`Statement ${i + 1} (${(result as any).command}) executed successfully.`);
+              if ((result as any).rowCount !== null && (result as any).rowCount !== undefined) {
+                totalRowCount += (result as any).rowCount;
+              }
+            } else {
+              messages.push(`Statement ${i + 1} executed successfully.`);
+            }
+          } catch (innerError: unknown) {
+            console.error(`SQL execution error in transaction for statement ${i + 1} ("${singleQuery}"):`, innerError);
+            let errorMessage = (innerError instanceof Error ? innerError.message : String(innerError)) || 'Unknown error';
+            throw new Error(`Error in statement ${i + 1} ("${singleQuery}"): ${errorMessage}`);
+          }
+        }
+      }
+      return { allResults, totalRowCount, messages };
+    });
 
     return {
       success: true,
-      data: Array.isArray(result) ? result : [],
-      rowCount: Array.isArray(result) ? result.length : (result as any).rowCount || 0,
-      message: message
+      data: transactionResults.allResults,
+      rowCount: transactionResults.totalRowCount,
+      message: transactionResults.messages.length > 1
+        ? `All ${transactionResults.messages.length} statements executed successfully. ${transactionResults.messages.join(' ')}`
+        : transactionResults.messages.join(' ') || 'Query executed successfully.'
     };
 
   } catch (error: unknown) {
