@@ -26,71 +26,7 @@ export interface QueryResult {
   rowCount?: number
 }
 
-// Function to validate that queries only access user's own schema
-function validateUserSchemaAccess(query: string, username: string): { isValid: boolean; error?: string } {
-  const cleanQuery = query.toLowerCase().trim();
-  const schemaName = username.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
 
-  // Check for explicit schema references that are not the user's schema
-  const schemaPattern = /(\w+)\.(\w+)/g;
-  let match;
-
-  while ((match = schemaPattern.exec(cleanQuery)) !== null) {
-    const referencedSchema = match[1];
-    // Allow information_schema for specific allowed queries (checked later)
-    // If the referenced schema is not the user's schema and not information_schema, block it
-    if (referencedSchema !== schemaName && referencedSchema !== 'public' && referencedSchema !== 'information_schema') {
-      return {
-        isValid: false,
-        error: `Access denied: Cannot access schema '${referencedSchema}'. You can only access your own schema '${schemaName}'.`
-      };
-    }
-  }
-
-  // Allow specific queries for user's own schema information ONLY
-  // The 's' flag is used to allow '.' to match newline characters for multi-line queries
-  const allowedSchemaQueries = [
-    // Allow user to query their own tables from information_schema
-    new RegExp(`information_schema\\.tables.*table_schema\\s*=\\s*'${schemaName}'`, 'is'),
-    new RegExp(`information_schema\\.columns.*table_schema\\s*=\\s*'${schemaName}'`, 'is'),
-    new RegExp(`information_schema\\.key_column_usage.*table_schema\\s*=\\s*'${schemaName}'`, 'is'),
-    new RegExp(`information_schema\\.table_constraints.*table_schema\\s*=\\s*'${schemaName}'`, 'is'),
-    // Allow user to query their own tables from pg_tables
-    new RegExp(`pg_tables.*schemaname\\s*=\\s*'${schemaName}'`, 'is'),
-    new RegExp(`pg_tables.*schemaname\\s*=\\s*'${username}'`, 'is'), // Also allow original username
-    // Allow current_schema references (AI agent uses this)
-    new RegExp(`information_schema\\.tables.*table_schema\\s*=\\s*current_schema`, 'is'),
-    new RegExp(`information_schema\\.columns.*table_schema\\s*=\\s*current_schema`, 'is'),
-  ];
-
-  // Check if query contains information_schema or pg_ tables
-  if (/information_schema\.|pg_\w+/.test(cleanQuery)) {
-    // Check if it's an allowed query for user's own schema
-    const isAllowed = allowedSchemaQueries.some(pattern => pattern.test(cleanQuery));
-    if (!isAllowed) {
-      // Additional check: if it's information_schema.tables with user's schema, allow it
-      const userSchemaTableQuery = new RegExp(`information_schema\\.tables.*'${schemaName}'`, 'i');
-      if (userSchemaTableQuery.test(cleanQuery)) {
-        // This is allowed - user querying their own schema tables
-      } else {
-        return {
-          isValid: false,
-          error: 'Access denied: You can only access your own schema information for privacy protection.'
-        };
-      }
-    }
-  }
-
-  // Block access to public schema tables
-  if (/\bpublic\.\w+/.test(cleanQuery)) {
-    return {
-      isValid: false,
-      error: 'Access denied: Cannot access public schema for privacy protection.'
-    };
-  }
-
-  return { isValid: true };
-}
 
 export async function executeUserQuery(username: string, query: string): Promise<QueryResult> {
   try {
@@ -107,7 +43,16 @@ export async function executeUserQuery(username: string, query: string): Promise
     // Sanitize schema name
     const currentUserName = username.replace(/[^a-zA-Z0-9_]/g, '_')
 
-    // Check if user is trying to access another user's schema
+    // Always set search_path to user's schema FIRST (unless already present)
+    const hasSearchPath = /SET\s+search_path\s+TO/i.test(cleanQuery);
+    let finalQuery = cleanQuery;
+
+    if (!hasSearchPath) {
+      // Prepend SET search_path to ensure user can only access their own schema
+      finalQuery = `SET search_path TO "${currentUserName}"; ${cleanQuery}`;
+    }
+
+    // Check if user is trying to access another user's schema explicitly
     const schemaAccessPattern = /schemaname\s*=\s*['"]([^'"]+)['"]/gi;
     const matches = [...cleanQuery.matchAll(schemaAccessPattern)];
 
@@ -118,15 +63,6 @@ export async function executeUserQuery(username: string, query: string): Promise
           success: false,
           error: `Access denied: You can only access your own schema '${currentUserName}'. Attempted to access '${requestedSchema}'.`
         }
-      }
-    }
-
-    // Validate user schema access FIRST
-    const validation = validateUserSchemaAccess(cleanQuery, username);
-    if (!validation.isValid) {
-      return {
-        success: false,
-        error: validation.error || 'Access denied'
       }
     }
 
@@ -146,7 +82,7 @@ export async function executeUserQuery(username: string, query: string): Promise
 
     // Check for dangerous operations
     for (const pattern of dangerousPatterns) {
-      if (pattern.test(cleanQuery)) {
+      if (pattern.test(finalQuery)) {
         return {
           success: false,
           error: 'Operation not allowed for security reasons'
@@ -174,7 +110,7 @@ export async function executeUserQuery(username: string, query: string): Promise
     }
 
     // Clean up markdown code blocks and other formatting issues BEFORE splitting
-    let processedQuery = cleanQuery
+    let processedQuery = finalQuery
 
     // Remove markdown code blocks
     processedQuery = processedQuery.replace(/```sql\s*/gi, '').replace(/```\s*/g, '')
@@ -183,12 +119,8 @@ export async function executeUserQuery(username: string, query: string): Promise
     processedQuery = processedQuery.replace(/^(here's|here is|the sql query is|sql query:)/i, '')
     processedQuery = processedQuery.replace(/\n\s*$/g, '') // Remove trailing whitespace
 
-    // MANDATORY: Prepend SET search_path to every user query
-    const setPathCommand = `SET search_path TO "${schemaName}"`
-    const queryWithPath = `${setPathCommand}; ${processedQuery}`
-
-    // Split the query string into individual statements
-    const queries = queryWithPath.split(';').map(q => q.trim()).filter(q => q.length > 0);
+    // Split the query string into individual statements (finalQuery already has SET search_path)
+    const queries = processedQuery.split(';').map(q => q.trim()).filter(q => q.length > 0);
 
     if (queries.length === 0) {
       return {
@@ -210,35 +142,43 @@ export async function executeUserQuery(username: string, query: string): Promise
     // Process the results from the transaction pipeline
     let allResults: any[] = [];
     let totalRowCount = 0;
-    let messages: string[] = [];
+    let hasSelectResults = false;
 
-    results.forEach((result, i) => {
-      const singleQuery = queries[i];
+    results.forEach((result) => {
       if (Array.isArray(result)) {
+        // This is a SELECT result with rows
         allResults = allResults.concat(result);
         totalRowCount += result.length;
-        if (result.length === 0 && !singleQuery.toUpperCase().startsWith('SELECT')) {
-          messages.push(`Statement ${i + 1} executed successfully.`);
-        } else {
-          messages.push(`Statement ${i + 1}: ${result.length} row(s) returned.`);
+        if (result.length > 0) {
+          hasSelectResults = true;
         }
       } else if (result && typeof result === 'object' && 'command' in result) {
-        messages.push(`Statement ${i + 1} (${(result as any).command}) executed successfully.`);
+        // This is a command result (INSERT, UPDATE, DELETE, etc.)
         if ((result as any).rowCount !== null && (result as any).rowCount !== undefined) {
           totalRowCount += (result as any).rowCount;
         }
-      } else {
-        messages.push(`Statement ${i + 1} executed successfully.`);
       }
     });
+
+    // Return appropriate message based on query type and results
+    let message = '';
+    if (hasSelectResults) {
+      // For SELECT queries, don't show execution messages, just the data
+      message = '';
+    } else {
+      // For non-SELECT queries (INSERT, UPDATE, DELETE, CREATE, etc.)
+      if (totalRowCount > 0) {
+        message = `${totalRowCount} row(s) affected.`;
+      } else {
+        message = 'Query executed successfully.';
+      }
+    }
 
     return {
       success: true,
       data: allResults,
       rowCount: totalRowCount,
-      message: messages.length > 1
-        ? `All ${messages.length} statements executed successfully. ${messages.join(' ')}`
-        : messages.join(' ') || 'Query executed successfully.'
+      message: message
     };
 
   } catch (error: unknown) {

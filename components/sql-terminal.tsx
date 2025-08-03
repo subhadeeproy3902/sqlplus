@@ -2,7 +2,14 @@
 
 import { useState, useEffect, useRef, KeyboardEvent } from 'react'
 import { formatQueryResult } from '@/lib/sql-executor'
-import { isAICommand, extractAIPrompt } from '@/lib/ai-sql-generator'
+// Helper functions for AI commands
+const isAICommand = (input: string): boolean => {
+  return input.trim().toLowerCase().startsWith('/ai ')
+}
+
+const extractAIPrompt = (input: string): string => {
+  return input.replace(/^\/ai\s*/i, '').trim()
+}
 import { ThemeToggle } from './theme-toggle'
 import HelpModal from './Helpmodal'
 import Loader from './Loader'
@@ -71,6 +78,7 @@ export default function SQLTerminal() {
   const [currentLineNumber, setCurrentLineNumber] = useState(1); // For auto-numbering
   const [isLoading, setIsLoading] = useState(false); // Loading state for API calls
   const [isExecutingSQL, setIsExecutingSQL] = useState(false); // Loading state for SQL execution
+  const [isExecutingAI, setIsExecutingAI] = useState(false); // Loading state for AI command execution
   
   const inputRef = useRef<HTMLTextAreaElement>(null) // Changed to HTMLTextAreaElement
   const terminalRef = useRef<HTMLDivElement>(null)
@@ -617,8 +625,8 @@ export default function SQLTerminal() {
     }
   }
 
-  const handleAICommand = async (input: string, retryContext?: { originalPrompt: string, previousError: string, previousQuery: string, retryCount: number }) => {
-    const prompt = retryContext ? retryContext.originalPrompt : extractAIPrompt(input)
+  const handleAICommand = async (input: string) => {
+    const prompt = extractAIPrompt(input)
 
     if (!prompt) {
       addLine('error', 'Please provide a prompt after /ai command. Example: /ai show me all users')
@@ -626,30 +634,22 @@ export default function SQLTerminal() {
       return
     }
 
-    const isRetry = !!retryContext
-    const retryCount = retryContext?.retryCount || 0
-    const maxRetries = 2
+    // Set AI execution state to prevent input from showing
+    setIsExecutingAI(true)
 
-    // Only show initial message for first attempt, not retries
-    if (!isRetry) {
-      addLine('output', `🤖 Generating SQL for: "${prompt}"`)
-      addLine('output', '')
-      // Add loader component instead of text
-      setLines(prevLines => [...prevLines, { type: 'output', content: '', isLoader: true, loaderMessage: 'Generating SQL...' }])
-    }
+    // Show initial message
+    addLine('output', `🤖 Generating SQL for: "${prompt}"`)
+    addLine('output', '')
+    // Add loader component instead of text
+    setLines(prevLines => [...prevLines, { type: 'output', content: '', isLoader: true, loaderMessage: 'Generating SQL...' }])
 
     try {
-      // Use the new agentic AI system for first attempt, fallback for retries
-      const endpoint = isRetry ? '/api/ai/generate-sql' : '/api/ai/agent'
+      // Use the agentic AI system
+      const endpoint = '/api/ai/agent'
 
-      const requestBody: any = {
+      const requestBody = {
         username: authState.username,
         prompt
-      }
-
-      if (retryContext) {
-        requestBody.previousError = retryContext.previousError
-        requestBody.previousQuery = retryContext.previousQuery
       }
 
       const response = await fetch(endpoint, {
@@ -660,17 +660,64 @@ export default function SQLTerminal() {
 
       const result = await response.json()
 
-      if (result.success && result.sqlQuery) {
-        // Remove loader if it exists (only for first attempt)
-        if (!isRetry) {
-          setLines(prevLines => prevLines.filter(line => !line.isLoader))
+      if (result.success && result.sqlCommands) {
+        // Remove loader if it exists
+        setLines(prevLines => prevLines.filter(line => !line.isLoader))
+
+        // Handle new agentic workflow with multiple commands
+        // Execute each command sequentially
+        for (let i = 0; i < result.sqlCommands.length; i++) {
+          const command = result.sqlCommands[i]
+
+          // Show the command being executed
+          addLine('success', `Executing: ${command}`)
+          setLines(prevLines => [...prevLines, { type: 'output', content: '', isLoader: true, loaderMessage: 'Executing...' }])
+
+          try {
+            // Execute command directly (SQL executor will handle SET search_path automatically)
+            const executeResponse = await fetch('/api/sql/execute', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                username: authState.username,
+                query: command
+              })
+            })
+
+            const executeResult = await executeResponse.json()
+
+            // Remove loader
+            setLines(prevLines => prevLines.filter(line => !line.isLoader))
+
+            if (executeResult.success) {
+              const formattedResult = formatQueryResult(executeResult)
+              addLine('output', await formattedResult)
+            } else {
+              const formattedResult = formatQueryResult(executeResult)
+              addLine('error', await formattedResult)
+              // Stop execution on error
+              break
+            }
+          } catch (error) {
+            // Remove loader
+            setLines(prevLines => prevLines.filter(line => !line.isLoader))
+            addLine('error', 'ERROR: Failed to execute command')
+            break
+          }
         }
 
-        // Show generated SQL for first attempt
-        if (!isRetry) {
-          addLine('success', `Generated SQL: ${result.sqlQuery}`)
-          // Don't add empty line here - go directly to executing state
-        }
+        // Add empty line after all commands are executed
+        addLine('output', '')
+        setIsExecutingAI(false) // Allow input to show again
+        return
+      } else if (result.success && result.sqlQuery) {
+        // Fallback to old single query method
+        // Remove loader if it exists
+        setLines(prevLines => prevLines.filter(line => !line.isLoader))
+
+        // Show generated SQL
+        addLine('success', `Generated SQL: ${result.sqlQuery}`)
+        // Don't add empty line here - go directly to executing state
 
         // For agent response, execution result is already included
         let executeResult
@@ -680,10 +727,8 @@ export default function SQLTerminal() {
           // Remove any remaining loaders
           setLines(prevLines => prevLines.filter(line => !line.isLoader))
         } else {
-          // Fallback: execute manually (for retry cases)
-          if (!isRetry) {
-            setLines(prevLines => [...prevLines, { type: 'output', content: '', isLoader: true, loaderMessage: 'Executing query...' }])
-          }
+          // Fallback: execute manually
+          setLines(prevLines => [...prevLines, { type: 'output', content: '', isLoader: true, loaderMessage: 'Executing query...' }])
 
           const executeResponse = await fetch('/api/sql/execute', {
             method: 'POST',
@@ -703,82 +748,15 @@ export default function SQLTerminal() {
 
         if (executeResult.success) {
           addLine('output', await formattedResult)
-          if (isRetry) {
-            addLine('success', `✅ Query executed successfully after ${retryCount} ${retryCount === 1 ? 'retry' : 'retries'}!`)
-          }
           addLine('output', '') // Add empty line after successful execution
         } else {
-          // If execution failed and we haven't exceeded max retries, try again silently
-          if (retryCount < maxRetries) {
-            // Retry with error context without showing intermediate messages
-            await handleAICommand(input, {
-              originalPrompt: prompt,
-              previousError: executeResult.error || 'Unknown database error',
-              previousQuery: result.sqlQuery,
-              retryCount: retryCount + 1
-            })
-            return
-          } else {
-            // Final failure after all retries
-            addLine('error', await formattedResult)
-            addLine('error', `❌ Failed to generate working query after ${maxRetries} retries.`)
-            addLine('output', 'Try rephrasing your request or check if the tables/columns exist.')
-          }
+          addLine('error', await formattedResult)
+          addLine('output', '') // Add empty line after failed execution
         }
       } else {
         // Remove loader if it exists
-        if (!isRetry) {
-          setLines(prevLines => prevLines.filter(line => !line.isLoader))
-        }
-
-        // If agent failed and this is the first attempt, try the fallback silently
-        if (!isRetry) {
-          try {
-            const fallbackResponse = await fetch('/api/ai/generate-sql', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                username: authState.username,
-                prompt
-              })
-            })
-
-            const fallbackResult = await fallbackResponse.json()
-
-            if (fallbackResult.success && fallbackResult.sqlQuery) {
-              addLine('success', `Generated SQL: ${fallbackResult.sqlQuery}`)
-              // Don't add empty line here - go directly to executing state
-              setLines(prevLines => [...prevLines, { type: 'output', content: '', isLoader: true, loaderMessage: 'Executing query...' }])
-
-              const executeResponse = await fetch('/api/sql/execute', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  username: authState.username,
-                  query: fallbackResult.sqlQuery
-                })
-              })
-
-              const executeResult = await executeResponse.json()
-              setLines(prevLines => prevLines.filter(line => !line.isLoader))
-              const formattedResult = formatQueryResult(executeResult)
-
-              if (executeResult.success) {
-                addLine('output', await formattedResult)
-                addLine('output', '') // Add empty line after successful execution
-              } else {
-                addLine('error', await formattedResult)
-                addLine('output', '') // Add empty line after failed execution
-              }
-            } else {
-              addLine('error', `AI Error: ${result.error || 'Failed to generate SQL'}`)
-            }
-          } catch (fallbackError) {
-            addLine('error', `AI Error: ${result.error || 'Failed to generate SQL'}`)
-          }
-        } else {
-          addLine('error', `AI Error: ${result.error || 'Failed to generate SQL'}`)
-        }
+        setLines(prevLines => prevLines.filter(line => !line.isLoader))
+        addLine('error', `AI Error: ${result.error || 'Failed to generate SQL'}`)
       }
 
       // Empty line is now added after each execution, not here
@@ -787,6 +765,8 @@ export default function SQLTerminal() {
       setLines(prevLines => prevLines.filter(line => !line.isLoader))
       addLine('error', 'ERROR: Failed to process AI command')
       addLine('output', '')
+    } finally {
+      setIsExecutingAI(false) // Always allow input to show again
     }
   }
 
@@ -835,7 +815,7 @@ export default function SQLTerminal() {
           );
         })}
         {/* Input area styling: Added px-2 pb-2 pt-1 and items-start - Only show when not loading */}
-        {!isLoading && !isExecutingSQL && !lines.some(line => line.isLoader) && (
+        {!isLoading && !isExecutingSQL && !isExecutingAI && !lines.some(line => line.isLoader) && (
           <div className="flex items-start text-black dark:text-white px-2 pb-2 pt-1">
             <span className="text-black dark:text-white">{getPrompt()}</span>
             {/* Replaced input with textarea */}
@@ -845,8 +825,8 @@ export default function SQLTerminal() {
             value={currentInput}
             onChange={(e) => setCurrentInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={isLoading || isExecutingSQL}
-            className={`bg-transparent border-none outline-none flex-1 text-black dark:text-white caret-black dark:caret-white resize-none overflow-y-hidden font-mono ${(isLoading || isExecutingSQL) ? 'opacity-50 cursor-not-allowed' : ''}`}
+            disabled={isLoading || isExecutingSQL || isExecutingAI}
+            className={`bg-transparent border-none outline-none flex-1 text-black dark:text-white caret-black dark:caret-white resize-none overflow-y-hidden font-mono ${(isLoading || isExecutingSQL || isExecutingAI) ? 'opacity-50 cursor-not-allowed' : ''}`}
             autoComplete="off"
             spellCheck={false}
             style={isPasswordInput ? {
@@ -860,7 +840,7 @@ export default function SQLTerminal() {
             // This is a limitation if we need to keep textarea + password masking.
             // For now, following subtask to change to textarea. Password masking in display (lines) is separate.
           />
-          {(isLoading || isExecutingSQL) ? (
+          {(isLoading || isExecutingSQL || isExecutingAI) ? (
             <span className="animate-spin text-black dark:text-white">⟳</span>
           ) : (
             <span className="animate-pulse text-black dark:text-white">█</span>

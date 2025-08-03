@@ -1,56 +1,59 @@
-import { generateText } from 'ai'
-import { groq } from '@ai-sdk/groq'
+import { generateObject } from "ai";
+import { groq } from "@ai-sdk/groq";
+import { z } from "zod";
 
 // Import the direct functions instead of using fetch for server-side calls
-import { executeUserQuery } from './sql-executor'
+import { executeUserQuery } from "./sql-executor";
 
 // Tool execution functions - using direct imports for server-side execution
 async function getTablesForUser(username: string) {
   try {
-    console.log('Getting tables for user:', username)
+    console.log("Getting tables for user:", username);
     // Use the sanitized schema name for consistency
-    const schemaName = username.replace(/[^a-zA-Z0-9_]/g, '_')
+    const schemaName = username.replace(/[^a-zA-Z0-9_]/g, "_");
 
     // Use direct database connection to bypass validation for table discovery
-    const { neon } = await import('@neondatabase/serverless')
-    const url = process.env.DATABASE_URL
+    const { neon } = await import("@neondatabase/serverless");
+    const url = process.env.DATABASE_URL;
     if (!url) {
-      console.error('DATABASE_URL not found')
-      return []
+      console.error("DATABASE_URL not found");
+      return [];
     }
 
-    const sql = neon(url)
+    const sql = neon(url);
 
     // Helper function to execute dynamic SQL queries
     const executeDynamicSQL = async (query: string) => {
-      const templateArray = Object.assign([query], { raw: [query] }) as TemplateStringsArray
-      return await sql(templateArray)
-    }
+      const templateArray = Object.assign([query], {
+        raw: [query],
+      }) as TemplateStringsArray;
+      return await sql(templateArray);
+    };
 
     // Set search path and get tables
-    await executeDynamicSQL(`SET search_path TO "${schemaName}"`)
+    await executeDynamicSQL(`SET search_path TO "${schemaName}"`);
 
     const result = await executeDynamicSQL(`
       SELECT tablename
       FROM pg_tables
       WHERE schemaname = '${schemaName}'
       ORDER BY tablename
-    `)
+    `);
 
-    console.log('Query result:', result)
-    const tables = result.map((row: any) => row.tablename)
-    console.log('Extracted tables:', tables)
-    return tables
+    console.log("Query result:", result);
+    const tables = result.map((row: any) => row.tablename);
+    console.log("Extracted tables:", tables);
+    return tables;
   } catch (error) {
-    console.error('Error getting tables:', error)
-    return []
+    console.error("Error getting tables:", error);
+    return [];
   }
 }
 
 async function getTableSchema(username: string, tableName: string) {
   try {
     // Use the sanitized schema name for consistency
-    const schemaName = username.replace(/[^a-zA-Z0-9_]/g, '_')
+    const schemaName = username.replace(/[^a-zA-Z0-9_]/g, "_");
 
     // Get columns using information_schema query that will be allowed by our validation
     const columnsQuery = `
@@ -66,12 +69,12 @@ async function getTableSchema(username: string, tableName: string) {
       WHERE table_schema = '${schemaName}'
       AND table_name = '${tableName}'
       ORDER BY ordinal_position
-    `
+    `;
 
-    const columnsResult = await executeUserQuery(username, columnsQuery)
+    const columnsResult = await executeUserQuery(username, columnsQuery);
 
     if (!columnsResult.success) {
-      return null
+      return null;
     }
 
     return {
@@ -79,149 +82,145 @@ async function getTableSchema(username: string, tableName: string) {
       columns: columnsResult.data || [],
       primaryKeys: [], // Simplified for now
       foreignKeys: [], // Simplified for now
-      indexes: [] // Simplified for now
-    }
+      indexes: [], // Simplified for now
+    };
   } catch (error) {
-    return null
+    return null;
   }
-}
-
-async function executeSQLQuery(username: string, query: string) {
-  return await executeUserQuery(username, query)
 }
 
 // Main AI agent function
 export async function generateSQLWithAgent(username: string, prompt: string) {
   try {
-    console.log('AI Agent starting for user:', username, 'prompt:', prompt)
+    console.log("AI Agent starting for user:", username, "prompt:", prompt);
+
+    // Check if GROQ_API_KEY is available
+    if (!process.env.GROQ_API_KEY) {
+      throw new Error("GROQ_API_KEY environment variable is not set");
+    }
+
+
 
     // Step 1: Get user's tables
-    const tables = await getTablesForUser(username)
-    console.log('Found tables:', tables)
+    const tables = await getTablesForUser(username);
+    console.log("Found tables:", tables);
 
     if (tables.length === 0) {
-      console.log('No tables found for user:', username)
+      console.log("No tables found for user:", username);
       return {
         success: false,
-        error: 'No tables found in your schema. Please create some tables first.',
-        explanation: 'The AI agent could not find any tables in your database schema.',
-        sqlQuery: null
-      }
+        error: "No tables found in your schema. Please create some tables first.",
+        explanation: "The AI agent could not find any tables in your database schema.",
+        sqlQuery: null,
+      };
     }
 
     // Step 2: Analyze which tables might be relevant - simplified approach
-    let filteredRelevantTables: string[]
+    let filteredRelevantTables: string[];
 
     // Simple keyword matching for table relevance
-    const promptLower = prompt.toLowerCase()
-    filteredRelevantTables = tables.filter(table => {
-      const tableLower = table.toLowerCase()
+    const promptLowerCase = prompt.toLowerCase();
+    filteredRelevantTables = tables.filter((table) => {
+      const tableLower = table.toLowerCase();
       // Check if table name appears in prompt or if prompt contains common keywords
-      return promptLower.includes(tableLower) ||
-             promptLower.includes('all') ||
-             promptLower.includes('show') ||
-             promptLower.includes('table')
-    })
+      return (
+        promptLowerCase.includes(tableLower) ||
+        promptLowerCase.includes("all") ||
+        promptLowerCase.includes("show") ||
+        promptLowerCase.includes("table")
+      );
+    });
 
     // If no specific tables found, use all tables (limited to 3 for performance)
     if (filteredRelevantTables.length === 0) {
-      filteredRelevantTables = tables.slice(0, 3)
+      filteredRelevantTables = tables.slice(0, 3);
     } else {
-      filteredRelevantTables = filteredRelevantTables.slice(0, 3)
+      filteredRelevantTables = filteredRelevantTables.slice(0, 3);
     }
+
     // Step 3: Get schemas for relevant tables
     const tableSchemas = await Promise.all(
       filteredRelevantTables.map(async (tableName) => {
-        const schema = await getTableSchema(username, tableName)
-        return { tableName, schema }
+        const schema = await getTableSchema(username, tableName);
+        return { tableName, schema };
       })
-    )
+    );
 
-    const validSchemas = tableSchemas.filter(item => item.schema !== null)
+    const validSchemas = tableSchemas.filter((item) => item.schema !== null);
 
-    // Step 4: Generate SQL with full context
-    let sqlQuery: string
+    // Step 4: Generate SQL commands array with structured output
+    let sqlCommands: string[] = [];
 
     try {
-      const sqlResult = await generateText({
-        model: groq('meta-llama/llama-4-scout-17b-16e-instruct'), // Use stable model
-        prompt: `You are an expert PostgreSQL assistant. Your primary function is to generate SQL queries based on user requests.
-
-SPECIAL TOOL INSTRUCTION: If the user asks to see, show, or list their tables, you MUST respond with the exact text: USE_SHOW_TABLES_TOOL
+      // Generate SQL using AI - let PostgreSQL handle schema isolation naturally
+      const result = await generateObject({
+          model: groq("meta-llama/llama-4-scout-17b-16e-instruct"),
+          temperature: 0.2,
+          maxTokens: 4096,
+          schema: z.object({
+            commands: z.array(z.string()).optional(),
+            sql_commands: z.array(z.string()).optional()
+          }).transform((data) => ({
+            commands: data.commands || data.sql_commands || []
+          })),
+          prompt: `You are a PostgreSQL assistant. Generate SQL commands for the user request.
 
 USER REQUEST: "${prompt}"
 
-AVAILABLE TABLES: ${filteredRelevantTables.join(', ')}
+AVAILABLE TABLES: ${filteredRelevantTables.join(", ")}
 
 TABLE SCHEMAS:
-${validSchemas.map(item => `
+${validSchemas.map(
+  (item) => `
 Table: ${item.tableName}
-Columns: ${item.schema?.columns?.map((col: any) => `${col.column_name} (${col.data_type})`).join(', ') || 'No columns found'}
-`).join('\n')}
+Columns: ${
+    item.schema?.columns
+      ?.map((col: any) => `${col.column_name} (${col.data_type})`)
+      .join(", ") || "No columns found"
+  }
+`
+).join("\n")}
 
-CRITICAL RULES:
-1. **Follow the SPECIAL TOOL INSTRUCTION above.** If the user wants to see their tables, respond with USE_SHOW_TABLES_TOOL and nothing else.
-2. For all other requests, generate ONLY the SQL query - no explanations, no markdown, no code blocks.
-3. Only use the tables listed above: ${filteredRelevantTables.join(', ')}
-4. Use PostgreSQL syntax.
-5. Do NOT include schema prefixes in table names.
-6. For CREATE TABLE statements, use simple table names.
-7. Use appropriate data types: VARCHAR(255), INTEGER, SERIAL PRIMARY KEY, BOOLEAN, TIMESTAMP, etc.
-8. End with a single semicolon.
-
-Your Response:`
-      })
-
-      sqlQuery = sqlResult.text.trim()
-
-      // Check if the AI wants to use the custom tool
-      if (sqlQuery === 'USE_SHOW_TABLES_TOOL') {
-        console.log('AI requested to use SHOW_TABLES_TOOL. Executing predefined query.')
-        const schemaName = username.replace(/[^a-zA-Z0-9_]/g, '_')
-        sqlQuery = `
-          SELECT tablename
-          FROM pg_tables
-          WHERE schemaname = '${schemaName}'
-          ORDER BY tablename;
-        `
-      } else {
-        // If not using the tool, clean up the generated SQL as before
-        sqlQuery = sqlQuery.replace(/```sql\s*/gi, '').replace(/```\s*/g, '');
-        sqlQuery = sqlQuery.replace(/^(here's|here is|the sql query is|sql query:)/i, '');
-        sqlQuery = sqlQuery.replace(/^(based on|looking at)/i, '');
-
-        const lines = sqlQuery.split('\n');
-        const sqlLines = lines.filter(line => {
-          const trimmedLine = line.trim();
-          return trimmedLine.length > 0 &&
-                 !trimmedLine.toLowerCase().includes('here') &&
-                 !trimmedLine.toLowerCase().includes('query') &&
-                 !trimmedLine.startsWith('--');
+RULES:
+1. Generate SQL commands in this format: { "commands": ["SQL1;", "SQL2;"] }
+2. For "show tables" requests, use: SELECT tablename FROM pg_tables WHERE schemaname = current_schema() ORDER BY tablename;
+3. For table schema requests, use: SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'tablename' ORDER BY ordinal_position;
+4. Only use the tables listed above: ${filteredRelevantTables.join(", ")}
+5. Each command must end with semicolon
+6. No explanations, just SQL commands
+7. Use standard PostgreSQL syntax`
         });
-        sqlQuery = sqlLines.join('\n').trim();
-        sqlQuery = sqlQuery.replace(/;+$/, '') + ';';
-      }
 
+      console.log("Generated commands:", result);
+      const commandsResult = result.object as { commands: string[] };
+      sqlCommands = commandsResult.commands;
     } catch (error) {
-      throw new Error(`Failed to generate SQL: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      console.error("Error in generateObject:", error);
+      // Fallback to simple query if AI fails
+      if (prompt.toLowerCase().includes("schema")) {
+        const tableName = filteredRelevantTables[0];
+        sqlCommands = [
+          `SELECT column_name, data_type 
+           FROM information_schema.columns 
+           WHERE table_name = '${tableName}'`
+        ];
+      }
     }
 
-    // Step 5: Validate and execute the query
-    const executionResult = await executeSQLQuery(username, sqlQuery)
-
+    // Step 5: Return the commands for sequential execution
     return {
       success: true,
-      sqlQuery,
-      executionResult
-    }
-
+      sqlCommands,
+      sqlQuery: null,
+      executionResult: null,
+    };
   } catch (error) {
-    console.error('AI Agent Error:', error)
+    console.error("AI Agent Error:", error);
     return {
       success: false,
-      error: 'AI agent failed to process request',
-      explanation: error instanceof Error ? error.message : 'Unknown error occurred',
-      sqlQuery: null
-    }
+      error: "AI agent failed to process request",
+      explanation: error instanceof Error ? error.message : "Unknown error occurred",
+      sqlQuery: null,
+    };
   }
 }
