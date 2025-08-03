@@ -195,7 +195,7 @@ export async function executeUserQuery(username: string, query: string): Promise
     const results = await sql.transaction(
       queries.map(q => {
         const queryToExecute = q.toUpperCase().startsWith('SET') ? q : `${q};`;
-        return sql.raw(queryToExecute);
+        return sql([queryToExecute] as unknown as TemplateStringsArray);
       })
     );
 
