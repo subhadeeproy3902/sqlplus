@@ -190,53 +190,47 @@ export async function executeUserQuery(username: string, query: string): Promise
       };
     }
 
-    // Use a transaction to ensure all queries are executed in the same session
-    const transactionResults = await sql.transaction(async (tx) => {
-      let allResults: any[] = [];
-      let totalRowCount = 0;
-      let messages: string[] = [];
+    // Use a transaction in pipeline mode to ensure all queries are executed in the same session.
+    // This is the correct way to handle multi-statement execution with the neon serverless driver.
+    const results = await sql.transaction(
+      queries.map(q => {
+        const queryToExecute = q.toUpperCase().startsWith('SET') ? q : `${q};`;
+        return sql.raw(queryToExecute);
+      })
+    );
 
-      for (let i = 0; i < queries.length; i++) {
-        const singleQuery = queries[i];
-        if (singleQuery) { // Ensure query is not empty
-          try {
-            const queryToExecute = singleQuery.toUpperCase().startsWith('SET') ? singleQuery : `${singleQuery};`;
-            const template = Object.assign([queryToExecute], { raw: [queryToExecute] });
-            const result = await tx(template as TemplateStringsArray);
+    // Process the results from the transaction pipeline
+    let allResults: any[] = [];
+    let totalRowCount = 0;
+    let messages: string[] = [];
 
-            if (Array.isArray(result)) {
-              allResults = allResults.concat(result);
-              totalRowCount += result.length;
-              if (result.length === 0 && !singleQuery.toUpperCase().startsWith('SELECT')) {
-                messages.push(`Statement ${i + 1} executed successfully.`);
-              } else {
-                messages.push(`Statement ${i + 1}: ${result.length} row(s) returned.`);
-              }
-            } else if (result && typeof result === 'object' && 'command' in result) {
-              messages.push(`Statement ${i + 1} (${(result as any).command}) executed successfully.`);
-              if ((result as any).rowCount !== null && (result as any).rowCount !== undefined) {
-                totalRowCount += (result as any).rowCount;
-              }
-            } else {
-              messages.push(`Statement ${i + 1} executed successfully.`);
-            }
-          } catch (innerError: unknown) {
-            console.error(`SQL execution error in transaction for statement ${i + 1} ("${singleQuery}"):`, innerError);
-            let errorMessage = (innerError instanceof Error ? innerError.message : String(innerError)) || 'Unknown error';
-            throw new Error(`Error in statement ${i + 1} ("${singleQuery}"): ${errorMessage}`);
-          }
+    results.forEach((result, i) => {
+      const singleQuery = queries[i];
+      if (Array.isArray(result)) {
+        allResults = allResults.concat(result);
+        totalRowCount += result.length;
+        if (result.length === 0 && !singleQuery.toUpperCase().startsWith('SELECT')) {
+          messages.push(`Statement ${i + 1} executed successfully.`);
+        } else {
+          messages.push(`Statement ${i + 1}: ${result.length} row(s) returned.`);
         }
+      } else if (result && typeof result === 'object' && 'command' in result) {
+        messages.push(`Statement ${i + 1} (${(result as any).command}) executed successfully.`);
+        if ((result as any).rowCount !== null && (result as any).rowCount !== undefined) {
+          totalRowCount += (result as any).rowCount;
+        }
+      } else {
+        messages.push(`Statement ${i + 1} executed successfully.`);
       }
-      return { allResults, totalRowCount, messages };
     });
 
     return {
       success: true,
-      data: transactionResults.allResults,
-      rowCount: transactionResults.totalRowCount,
-      message: transactionResults.messages.length > 1
-        ? `All ${transactionResults.messages.length} statements executed successfully. ${transactionResults.messages.join(' ')}`
-        : transactionResults.messages.join(' ') || 'Query executed successfully.'
+      data: allResults,
+      rowCount: totalRowCount,
+      message: messages.length > 1
+        ? `All ${messages.length} statements executed successfully. ${messages.join(' ')}`
+        : messages.join(' ') || 'Query executed successfully.'
     };
 
   } catch (error: unknown) {
