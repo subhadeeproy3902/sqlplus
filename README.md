@@ -1,5 +1,6 @@
 # 🚀 AI-Powered SQL Terminal Editor
 
+
 A sophisticated SQL terminal interface with intelligent AI integration, built with Next.js, TypeScript, and PostgreSQL. Features user-specific schema isolation, real-time AI query generation, and a terminal-like experience.
 
 ## ✨ Key Features
