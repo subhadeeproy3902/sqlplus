@@ -11,8 +11,8 @@ const extractAIPrompt = (input: string): string => {
   return input.replace(/^\/ai\s*/i, '').trim()
 }
 import { ThemeToggle } from './theme-toggle'
-import HelpModal from './Helpmodal'
 import Loader from './Loader'
+import HelpModal from './Helpmodal'
 
 interface TerminalLine {
   type: 'output' | 'input' | 'error' | 'success'
@@ -74,7 +74,6 @@ export default function SQLTerminal() {
   const [authStep, setAuthStep] = useState<'ask' | 'username' | 'password'>('ask')
   const [tempUsername, setTempUsername] = useState('')
   const [isPasswordInput, setIsPasswordInput] = useState(false)
-  const [isHelpModalOpen, setIsHelpModalOpen] = useState(false); // State for HelpModal
   const [currentLineNumber, setCurrentLineNumber] = useState(1); // For auto-numbering
   const [isLoading, setIsLoading] = useState(false); // Loading state for API calls
   const [isExecutingSQL, setIsExecutingSQL] = useState(false); // Loading state for SQL execution
@@ -553,29 +552,6 @@ export default function SQLTerminal() {
       // Welcome message will be added by useEffect when authStep changes to 'ask'
       return;
     }
-
-    if (commandToCheck === 'help') {
-      // The existing help text added via addLine can remain as a quick reference
-      addLine('output', 'Available commands:');
-      addLine('output', '  SQL commands - Execute any SQL query');
-      addLine('output', '  /ai <prompt> - Generate and execute SQL using AI');
-      addLine('output', '  clear scr - Clear the screen');
-      addLine('output', '  help - Show this help message (also opens detailed help)');
-      addLine('output', '  exit - Disconnect and logout');
-      addLine('output', '');
-      addLine('output', 'AI Examples:');
-      addLine('output', '  /ai show me all tables');
-      addLine('output', '  /ai create a users table with id and name');
-      addLine('output', '  /ai find all records where name contains John');
-      addLine('output', '');
-      addLine('output', 'Quick commands:');
-      addLine('output', '  SHOW TABLES - Show all your tables');
-      addLine('output', '');
-      // Now also open the modal:
-      setIsHelpModalOpen(true);
-      return; // Prevent further processing of "help" as a SQL query
-    }
-
     if (!cleanedInput.trim()) { // Check if cleanedInput is empty
       return;
     }
@@ -773,18 +749,7 @@ export default function SQLTerminal() {
   return (
     <div className="h-screen bg-white dark:bg-black text-black dark:text-white font-mono text-sm overflow-hidden flex flex-col relative">
       <ThemeToggle />
-      {/* Help Button */}
-      <button
-        onClick={() => setIsHelpModalOpen(true)}
-        className="fixed top-4 right-16 z-50 p-2 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-black text-black dark:text-white hover:bg-gray-100 dark:hover:bg-gray-900 transition-colors"
-        aria-label="Open help modal"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12v-.008Z" />
-        </svg>
-      </button>
-      <HelpModal isOpen={isHelpModalOpen} onClose={() => setIsHelpModalOpen(false)} />
-
+      <HelpModal />
       <div
         ref={terminalRef}
         className="flex-1 overflow-y-auto p-2 space-y-1 terminal-output" // Reduced padding, added terminal-output class
@@ -816,7 +781,7 @@ export default function SQLTerminal() {
         })}
         {/* Input area styling: Added px-2 pb-2 pt-1 and items-start - Only show when not loading */}
         {!isLoading && !isExecutingSQL && !isExecutingAI && !lines.some(line => line.isLoader) && (
-          <div className="flex items-start text-black dark:text-white px-2 pb-2 pt-1">
+          <div className="flex items-start text-black dark:text-white pr-2 pb-2 pt-1">
             <span className="text-black dark:text-white">{getPrompt()}</span>
             {/* Replaced input with textarea */}
             <textarea

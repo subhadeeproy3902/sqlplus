@@ -89,14 +89,16 @@ export async function getUserSchemaInfo(username: string): Promise<SchemaInfo> {
         isPrimaryKey: col.is_primary_key
       }))
       
-      // Get sample data (first 3 rows)
+      // Get ALL data from the table using schema prefix (search_path doesn't persist)
       let sampleData: Record<string, any>[] = []
       try {
-        const sampleResult = await executeDynamicSQL(`SELECT * FROM "${tableName}" LIMIT 3`)
-        sampleData = Array.isArray(sampleResult) ? sampleResult : []
+        const allDataResult = await executeDynamicSQL(`SELECT * FROM "${schemaName}"."${tableName}" ORDER BY 1`)
+        sampleData = Array.isArray(allDataResult) ? allDataResult : []
+        console.log(`Retrieved ${sampleData.length} rows from table ${schemaName}.${tableName}`)
+        console.log(`Sample data:`, sampleData)
       } catch (error) {
-        // If we can't get sample data, that's okay
-        console.warn(`Could not get sample data for table ${tableName}:`, error)
+        // If we can't get data, that's okay
+        console.warn(`Could not get data for table ${schemaName}.${tableName}:`, error)
       }
       
       tableInfos.push({
@@ -139,10 +141,60 @@ export async function formatSchemaForAI(schemaInfo: SchemaInfo): Promise<string>
     }
     
     if (table.sampleData && table.sampleData.length > 0) {
-      schemaDescription += `Sample data (${table.sampleData.length} rows):\n`
-      for (const row of table.sampleData) {
-        schemaDescription += `  ${JSON.stringify(row)}\n`
+      schemaDescription += `EXISTING DATA (${table.sampleData.length} rows):\n`
+
+      // Show all data for small tables, or first 10 + last 5 for larger tables
+      if (table.sampleData.length <= 15) {
+        for (const row of table.sampleData) {
+          schemaDescription += `  ${JSON.stringify(row)}\n`
+        }
+      } else {
+        // Show first 10 rows
+        for (let i = 0; i < 10; i++) {
+          schemaDescription += `  ${JSON.stringify(table.sampleData[i])}\n`
+        }
+        schemaDescription += `  ... (${table.sampleData.length - 15} more rows) ...\n`
+        // Show last 5 rows
+        for (let i = table.sampleData.length - 5; i < table.sampleData.length; i++) {
+          schemaDescription += `  ${JSON.stringify(table.sampleData[i])}\n`
+        }
       }
+
+      // Add critical information about primary key values
+      const primaryKeyColumns = table.columns.filter(col => col.isPrimaryKey)
+      if (primaryKeyColumns.length > 0) {
+        const allPkValues = table.sampleData.map(row => {
+          const pkData: Record<string, any> = {}
+          primaryKeyColumns.forEach(pkCol => {
+            pkData[pkCol.columnName] = row[pkCol.columnName]
+          })
+          return pkData
+        })
+
+        // Find the highest numeric primary key value
+        const numericPkColumns = primaryKeyColumns.filter(col =>
+          col.dataType.includes('int') || col.dataType.includes('serial')
+        )
+
+        if (numericPkColumns.length > 0) {
+          const maxValues: Record<string, number> = {}
+          numericPkColumns.forEach(pkCol => {
+            const values = (table.sampleData ?? [])
+              .map(row => parseInt(row[pkCol.columnName]))
+              .filter(val => !isNaN(val))
+            maxValues[pkCol.columnName] = values.length > 0 ? Math.max(...values) : 0
+          })
+          schemaDescription += `CRITICAL: Highest primary key values: ${JSON.stringify(maxValues)}\n`
+          schemaDescription += `CRITICAL: Next available primary key values should start from: ${JSON.stringify(
+            Object.fromEntries(Object.entries(maxValues).map(([key, val]) => [key, val + 1]))
+          )}\n`
+        }
+
+        schemaDescription += `All primary key values in use: ${JSON.stringify(allPkValues)}\n`
+      }
+    } else {
+      schemaDescription += `EXISTING DATA: Table is empty (0 rows)\n`
+      schemaDescription += `CRITICAL: This is an empty table - primary keys should start from 1\n`
     }
     
     schemaDescription += '\n'
