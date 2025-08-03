@@ -10,6 +10,14 @@ if (!url) {
 }
 const sql = neon(url)
 
+// Helper function to execute dynamic SQL queries with the Neon serverless driver
+// This properly handles the tagged template literal requirement
+async function executeDynamicSQL(query: string): Promise<any> {
+  // Create a proper TemplateStringsArray for the Neon driver
+  const templateArray = Object.assign([query], { raw: [query] }) as TemplateStringsArray
+  return await sql(templateArray)
+}
+
 export interface QueryResult {
   success: boolean
   data?: any[]
@@ -153,8 +161,7 @@ export async function executeUserQuery(username: string, query: string): Promise
     try {
       // Create user's schema if it doesn't exist
       const createSchemaQuery = `CREATE SCHEMA IF NOT EXISTS "${schemaName}"`
-      const createTemplate = Object.assign([createSchemaQuery], { raw: [createSchemaQuery] })
-      await sql(createTemplate as TemplateStringsArray)
+      await executeDynamicSQL(createSchemaQuery)
 
       // Schema setup complete - SET search_path will be prepended to user queries below
 
@@ -195,7 +202,8 @@ export async function executeUserQuery(username: string, query: string): Promise
     const results = await sql.transaction(
       queries.map(q => {
         const queryToExecute = q.toUpperCase().startsWith('SET') ? q : `${q};`;
-        return sql([queryToExecute] as unknown as TemplateStringsArray);
+        const templateArray = Object.assign([queryToExecute], { raw: [queryToExecute] }) as TemplateStringsArray;
+        return sql(templateArray);
       })
     );
 

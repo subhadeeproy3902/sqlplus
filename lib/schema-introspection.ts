@@ -10,6 +10,12 @@ if (!url) {
 }
 const sql = neon(url)
 
+// Helper function to execute dynamic SQL queries with the Neon serverless driver
+async function executeDynamicSQL(query: string): Promise<any> {
+  const templateArray = Object.assign([query], { raw: [query] }) as TemplateStringsArray
+  return await sql(templateArray)
+}
+
 export interface TableInfo {
   tableName: string
   columns: ColumnInfo[]
@@ -34,23 +40,15 @@ export async function getUserSchemaInfo(username: string): Promise<SchemaInfo> {
     const schemaName = username.replace(/[^a-zA-Z0-9_]/g, '_')
     
     // Set search path to user schema
-    const setPathTemplate = Object.assign([`SET search_path TO "${schemaName}"`], { raw: [`SET search_path TO "${schemaName}"`] })
-    await sql(setPathTemplate as TemplateStringsArray)
-    
+    await executeDynamicSQL(`SET search_path TO "${schemaName}"`)
+
     // Get all tables in the user's schema
-    const tablesQuery = Object.assign([`
+    const tablesResult = await executeDynamicSQL(`
       SELECT tablename
       FROM pg_tables
       WHERE schemaname = '${schemaName}'
       ORDER BY tablename
-    `], { raw: [`
-      SELECT tablename
-      FROM pg_tables
-      WHERE schemaname = '${schemaName}'
-      ORDER BY tablename
-    `] })
-    
-    const tablesResult = await sql(tablesQuery as TemplateStringsArray)
+    `)
     const tables = Array.isArray(tablesResult) ? tablesResult : []
     
     const tableInfos: TableInfo[] = []
@@ -59,8 +57,8 @@ export async function getUserSchemaInfo(username: string): Promise<SchemaInfo> {
       const tableName = table.tablename
       
       // Get column information
-      const columnsQuery = Object.assign([`
-        SELECT 
+      const columnsResult = await executeDynamicSQL(`
+        SELECT
           c.column_name,
           c.data_type,
           c.is_nullable,
@@ -80,30 +78,7 @@ export async function getUserSchemaInfo(username: string): Promise<SchemaInfo> {
         WHERE c.table_schema = '${schemaName}'
           AND c.table_name = '${tableName}'
         ORDER BY c.ordinal_position
-      `], { raw: [`
-        SELECT 
-          c.column_name,
-          c.data_type,
-          c.is_nullable,
-          c.column_default,
-          CASE WHEN pk.column_name IS NOT NULL THEN true ELSE false END as is_primary_key
-        FROM information_schema.columns c
-        LEFT JOIN (
-          SELECT ku.column_name
-          FROM information_schema.table_constraints tc
-          JOIN information_schema.key_column_usage ku
-            ON tc.constraint_name = ku.constraint_name
-            AND tc.table_schema = ku.table_schema
-          WHERE tc.constraint_type = 'PRIMARY KEY'
-            AND tc.table_schema = '${schemaName}'
-            AND tc.table_name = '${tableName}'
-        ) pk ON c.column_name = pk.column_name
-        WHERE c.table_schema = '${schemaName}'
-          AND c.table_name = '${tableName}'
-        ORDER BY c.ordinal_position
-      `] })
-      
-      const columnsResult = await sql(columnsQuery as TemplateStringsArray)
+      `)
       const columns = Array.isArray(columnsResult) ? columnsResult : []
       
       const columnInfos: ColumnInfo[] = columns.map(col => ({
@@ -117,8 +92,7 @@ export async function getUserSchemaInfo(username: string): Promise<SchemaInfo> {
       // Get sample data (first 3 rows)
       let sampleData: Record<string, any>[] = []
       try {
-        const sampleQuery = Object.assign([`SELECT * FROM "${tableName}" LIMIT 3`], { raw: [`SELECT * FROM "${tableName}" LIMIT 3`] })
-        const sampleResult = await sql(sampleQuery as TemplateStringsArray)
+        const sampleResult = await executeDynamicSQL(`SELECT * FROM "${tableName}" LIMIT 3`)
         sampleData = Array.isArray(sampleResult) ? sampleResult : []
       } catch (error) {
         // If we can't get sample data, that's okay

@@ -21,22 +21,21 @@ async function getTablesForUser(username: string) {
 
     const sql = neon(url)
 
-    // Set search path and get tables
-    const setPathTemplate = Object.assign([`SET search_path TO "${schemaName}"`], { raw: [`SET search_path TO "${schemaName}"`] })
-    await sql(setPathTemplate as TemplateStringsArray)
+    // Helper function to execute dynamic SQL queries
+    const executeDynamicSQL = async (query: string) => {
+      const templateArray = Object.assign([query], { raw: [query] }) as TemplateStringsArray
+      return await sql(templateArray)
+    }
 
-    const tablesTemplate = Object.assign([`
+    // Set search path and get tables
+    await executeDynamicSQL(`SET search_path TO "${schemaName}"`)
+
+    const result = await executeDynamicSQL(`
       SELECT tablename
       FROM pg_tables
       WHERE schemaname = '${schemaName}'
       ORDER BY tablename
-    `], { raw: [`
-      SELECT tablename
-      FROM pg_tables
-      WHERE schemaname = '${schemaName}'
-      ORDER BY tablename
-    `] })
-    const result = await sql(tablesTemplate as TemplateStringsArray)
+    `)
 
     console.log('Query result:', result)
     const tables = result.map((row: any) => row.tablename)

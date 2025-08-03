@@ -21,6 +21,12 @@ if (!url) {
 const sql = neon(url)
 const db = drizzle({ client: sql })
 
+// Helper function to execute dynamic SQL queries with the Neon serverless driver
+async function executeDynamicSQL(query: string): Promise<any> {
+  const templateArray = Object.assign([query], { raw: [query] }) as TemplateStringsArray
+  return await sql(templateArray)
+}
+
 async function cleanupDatabase() {
   try {
     console.log('🧹 Starting database cleanup...')
@@ -53,8 +59,7 @@ async function cleanupDatabase() {
       try {
         // Drop the user's schema and all its contents
         const dropSchemaQuery = `DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`
-        const dropTemplate = Object.assign([dropSchemaQuery], { raw: [dropSchemaQuery] })
-        await sql(dropTemplate as TemplateStringsArray)
+        await executeDynamicSQL(dropSchemaQuery)
         console.log(`   ✅ Dropped schema: ${schemaName}`)
         
         // Remove user from the user table
@@ -71,13 +76,12 @@ async function cleanupDatabase() {
     
     try {
       const schemasQuery = `
-        SELECT schema_name 
-        FROM information_schema.schemata 
+        SELECT schema_name
+        FROM information_schema.schemata
         WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast', 'public')
         AND schema_name ~ '^[a-zA-Z0-9_]+$'
       `
-      const schemasTemplate = Object.assign([schemasQuery], { raw: [schemasQuery] })
-      const schemas = await sql(schemasTemplate as TemplateStringsArray)
+      const schemas = await executeDynamicSQL(schemasQuery)
       
       const userSchemas = users.map(user => user.username.replace(/[^a-zA-Z0-9_]/g, '_'))
       
@@ -87,8 +91,7 @@ async function cleanupDatabase() {
           console.log(`🗑️  Found orphaned schema: ${schemaName}`)
           try {
             const dropOrphanQuery = `DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`
-            const dropOrphanTemplate = Object.assign([dropOrphanQuery], { raw: [dropOrphanQuery] })
-            await sql(dropOrphanTemplate as TemplateStringsArray)
+            await executeDynamicSQL(dropOrphanQuery)
             console.log(`   ✅ Dropped orphaned schema: ${schemaName}`)
           } catch (error) {
             console.error(`   ❌ Error dropping orphaned schema ${schemaName}:`, error)

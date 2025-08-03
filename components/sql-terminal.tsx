@@ -669,7 +669,7 @@ export default function SQLTerminal() {
         // Show generated SQL for first attempt
         if (!isRetry) {
           addLine('success', `Generated SQL: ${result.sqlQuery}`)
-          addLine('output', '')
+          // Don't add empty line here - go directly to executing state
         }
 
         // For agent response, execution result is already included
@@ -706,6 +706,7 @@ export default function SQLTerminal() {
           if (isRetry) {
             addLine('success', `✅ Query executed successfully after ${retryCount} ${retryCount === 1 ? 'retry' : 'retries'}!`)
           }
+          addLine('output', '') // Add empty line after successful execution
         } else {
           // If execution failed and we haven't exceeded max retries, try again silently
           if (retryCount < maxRetries) {
@@ -746,7 +747,7 @@ export default function SQLTerminal() {
 
             if (fallbackResult.success && fallbackResult.sqlQuery) {
               addLine('success', `Generated SQL: ${fallbackResult.sqlQuery}`)
-              addLine('output', '')
+              // Don't add empty line here - go directly to executing state
               setLines(prevLines => [...prevLines, { type: 'output', content: '', isLoader: true, loaderMessage: 'Executing query...' }])
 
               const executeResponse = await fetch('/api/sql/execute', {
@@ -764,8 +765,10 @@ export default function SQLTerminal() {
 
               if (executeResult.success) {
                 addLine('output', await formattedResult)
+                addLine('output', '') // Add empty line after successful execution
               } else {
                 addLine('error', await formattedResult)
+                addLine('output', '') // Add empty line after failed execution
               }
             } else {
               addLine('error', `AI Error: ${result.error || 'Failed to generate SQL'}`)
@@ -778,7 +781,7 @@ export default function SQLTerminal() {
         }
       }
 
-      addLine('output', '')
+      // Empty line is now added after each execution, not here
     } catch (error) {
       // Remove loader if it exists
       setLines(prevLines => prevLines.filter(line => !line.isLoader))
