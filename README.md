@@ -281,4 +281,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
+## Author
+
+[Subhadeep Roy](https://x.com/mvp_Subha)
+
+---
+
 **Built with ❤️ for developers who love SQL and AI**
