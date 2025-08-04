@@ -280,8 +280,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Tailwind CSS** - Utility-first CSS framework
 - **Lucide React** - Beautiful icon library
 
----
-
 ## Author
 
 [Subhadeep Roy](https://x.com/mvp_Subha)
