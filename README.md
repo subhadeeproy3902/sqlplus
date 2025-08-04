@@ -72,8 +72,8 @@ PostgreSQL Database
 
 1. **Clone the repository**
 ```bash
-git clone <repository-url>
-cd sqleditor
+git clone https://github.com/subhadeeproy3902/sqlplus.git
+cd sqlplus
 ```
 
 2. **Install dependencies**
