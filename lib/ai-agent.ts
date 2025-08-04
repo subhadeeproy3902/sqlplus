@@ -119,6 +119,8 @@ RULES:
 4. Return format: { "tables": ["table1", "table2"] } or { "tables": [] } for no tables needed
 5. Be conservative - only include tables that are actually needed
 6. If user wants to add/insert data, return the table they want to modify
+7. Make sure to return the least number of tables necessary and mandatory for the request
+8. If you cannot determine relevant tables, return an empty array []
 
 Analyze the request and return the relevant tables`
     });
@@ -299,6 +301,10 @@ CRITICAL RULES FOR SQL GENERATION:
 14. For "show tables" requests, use: SELECT tablename FROM pg_tables WHERE schemaname = 'USER_SCHEMA_NAME'
 15. For "show data" requests, use: SELECT * FROM table_name
 16. Always use the correct schema name provided in USER SCHEMA field above
+17. Use VARCHAR with a size for text fields, e.g. VARCHAR(255)
+18. Do not user Character data types for Primary keys unless specified.
+19. If the schema has a Character data type, make sure to use only a single character for that field.
+20. If the table contains data, ensure not to insert duplicate records.
 `
       });
 

@@ -31,7 +31,7 @@ export default function HelpModal() {
     <Dialog>
       <DialogTrigger asChild>
         <button
-          className="p-2 rounded-md border hover:bg-secondary transition-colors w-auto h-auto aspect-square fixed top-4 right-16 z-50 inline-flex items-center justify-center "
+          className="p-2 rounded-md border bg-muted hover:bg-secondary transition-colors w-auto h-auto aspect-square fixed top-4 right-16 z-50 inline-flex items-center justify-center "
         >
           <HelpCircle className="w-5 h-5" />
         </button>
